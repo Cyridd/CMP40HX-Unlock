@@ -13,32 +13,6 @@ v2.5 起**不需要开启测试签名**，装完系统状态干净，不影响�
 
 ---
 
-## 📁 仓库结构（两套独立组件，请勿混淆）
-
-本仓库同时收录了 CMP 40HX 解锁的**两条互不相同的技术路线**：
-
-| 路径 | 组件 | 语言 | 作用 |
-|---|---|---|---|
-| **`windows-v2.5/`** | **Windows 一键解锁工具 v2.5** | Go + C | 本文档描述的对象：安装/卸载/诊断三件套、Gen2 解锁、解锁固件部署与引导管理 |
-| 仓库根目录<br>`src/` `include/` `Makefile` `build/` `examples/` `tests/` | **NVPermissiveEFI** | C (UEFI) | 另一套独立的 UEFI 解锁固件实现（ELF 加载器 + core 载荷），独立演进 |
-
-> **关于两者的差异**
-> v2.5 随包分发的解锁固件 `40HXUNLK.EFI`，其源码位于 **`windows-v2.5/tools/unlock40x/`**
-> （`unlock40x_v70.c` + 固件 blob + `build_v70.sh`）。
-> 根目录的 NVPermissiveEFI 是**另一条 EFI 路线**，与前者不是同一份代码。
-> 两者在本仓库中并存、互不覆盖，**请勿互相替换**。
-
-**只想下载使用？** 直接取 [`windows-v2.5/release/`](windows-v2.5/release/) 下的三个 exe 即可。
-
-**从源码构建 Windows 工具**（需 Go 1.26+，在 `windows-v2.5/` 下执行）：
-```bat
-cd tools\inst40hx     && go build -ldflags="-H=windowsgui" -o 40HXInstaller.exe .
-cd ..\uninstall40x    && go build -ldflags="-H=windowsgui" -o 40HXUninstaller.exe .
-cd ..\check40x        && go build -ldflags="-H=windowsgui" -o 40HXCheck.exe .
-```
-
----
-
 ## 目录
 
 1. [包内容](#1-包内容)
@@ -68,8 +42,6 @@ cd ..\check40x        && go build -ldflags="-H=windowsgui" -o 40HXCheck.exe .
 
 > 三个 exe 职责分离：Installer = **装**；Uninstaller = **卸**；Check = **查**。
 > 出问题时双击 Check 就行，不用碰命令行。
-
-> 以上文件均位于 [`windows-v2.5/release/`](windows-v2.5/release/)。
 
 ---
 
@@ -197,7 +169,7 @@ cd ..\check40x        && go build -ldflags="-H=windowsgui" -o 40HXCheck.exe .
 - 提示找不到 `\EFI\40HX\40HXUNLK.EFI`
 - 卡在 40HX Unlock 画面进不去 Windows
 
-**立即打开《EFI应急修复指南.md》**（位于 `windows-v2.5/release/`），按里面第 1 节操作：
+**立即打开本目录的《EFI应急修复指南.md》**，按里面第 1 节操作：
 插一个 **Windows 安装 U 盘** → 修复计算机 → 命令提示符 →
 挂载 EFI 分区 → 删掉 `\EFI\40HX` → `bootrec /rebuildbcd` 重建引导 → 重启即恢复。
 
