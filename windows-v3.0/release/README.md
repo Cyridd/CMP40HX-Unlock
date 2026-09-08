@@ -13,24 +13,6 @@ v2.5 起**不需要开启测试签名**，装完系统状态干净，不影响�
 
 ---
 
-## 📁 仓库说明
-
-本仓库收录 **CMP 40HX Windows 解锁工具 v3.0.0** 的完整源码（Go + C）。
-
-- **想直接用？** 取 [`windows-v3.0/release/`](windows-v3.0/release/) 下的 `40HXInstaller.exe` / `40HXUninstaller.exe` / `40HXCheck.exe`
-- **解锁固件源码**：`windows-v3.0/tools/unlock40x/`（`unlock40x_v70.c` + 构建脚本 `build_v70.sh`）
-- **完整使用手册**：[windows-v3.0/README.md](windows-v3.0/README.md)
-
-**从源码构建**（需 Go 1.26+，在 `windows-v3.0/` 目录下执行；`-a` 强制全量重编，`-s -w` 剥离符号以复现发布产物体积）：
-
-```bat
-cd tools\inst40hx     && go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o 40HXInstaller.exe .
-cd ..\uninstall40x    && go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o 40HXUninstaller.exe .
-cd ..\check40x        && go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o 40HXCheck.exe .
-```
-
----
-
 ## 0. 卡住了？把《AI辅助安装提示词.txt》整段复制给 AI 助手
 
 > 安装/解锁遇到问题时，打开同目录 **`AI辅助安装提示词.txt`**，把分隔线以内的文字整段复制给任意
