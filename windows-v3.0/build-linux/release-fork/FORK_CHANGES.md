@@ -1,4 +1,4 @@
-# Cyridd fork notes
+# Fork notes
 
 This fork keeps the experimentally validated CMP 40HX EFI payload and adds
 small, auditable changes around it. The `40HXUnlock_v3.2.0` package available
