@@ -167,25 +167,29 @@ func (g *guiLog) Write(p []byte) (int, error) {
 // ---- GUI 状态 ----
 
 type guiState struct {
-	mw       *walk.MainWindow
-	log      *guiLog
-	teLog    *walk.TextEdit
-	tip      *walk.Label
-	busyBy   string // 当前占用互斥的操作名(""=空闲)。只在 UI 线程读写:
+	mw                                                           *walk.MainWindow
+	log                                                          *guiLog
+	teLog                                                        *walk.TextEdit
+	tip                                                          *walk.Label
+	langBox                                                      *walk.ComboBox
+	langLabel                                                    *walk.Label
+	gbInstall, gbPolicy, gbLog                                   *walk.GroupBox
+	lblPolicy, lblPolicyModes, lblRetry, lblRetrySep, lblMinutes *walk.Label
+	busyBy                                                       string // 当前占用互斥的操作名(""=空闲)。只在 UI 线程读写:
 	// begin() 在 OnClicked(UI线程) 调用, end() 经 sync 回到 UI 线程 → 无线程竞争。
-	lastScan  []statusItem
-	lastGuide string // 上次打印的环境指引(变化才打印, 防重扫刷屏)
+	lastScan    []statusItem
+	lastGuide   string // 上次打印的环境指引(变化才打印, 防重扫刷屏)
 	lastAV      string // 上次识别到的第三方杀软(同上)
 	lastDefWarn string // "无 Defender 模块"提示去重
 
-	ckGsp, ckDrv, ckEfi, ckTask            *walk.CheckBox
-	ckFast, ckAspm, ckPerf, ckDefOff       *walk.CheckBox
-	pbInstall, pbFull                      *walk.PushButton
+	ckGsp, ckDrv, ckEfi, ckTask      *walk.CheckBox
+	ckFast, ckAspm, ckPerf, ckDefOff *walk.CheckBox
+	pbInstall, pbFull                *walk.PushButton
 
-	rbStrategy     [3]*walk.RadioButton
-	ckAutoHard     *walk.CheckBox
-	neRetryCnt     *walk.NumberEdit
-	neRetryMin     *walk.NumberEdit
+	rbStrategy                    [3]*walk.RadioButton
+	ckAutoHard                    *walk.CheckBox
+	neRetryCnt                    *walk.NumberEdit
+	neRetryMin                    *walk.NumberEdit
 	pbSave, pbGen2, pbGen2Install *walk.PushButton
 }
 
@@ -194,6 +198,71 @@ func (st *guiState) sync(f func()) {
 		st.mw.Synchronize(f)
 	} else {
 		f()
+	}
+}
+
+// refreshTexts updates controls that are visible in the main window. The
+// language selector is intentionally live so users do not need to restart the
+// installer just to switch between English, Russian, and Chinese.
+func (st *guiState) refreshTexts() {
+	if st.mw == nil {
+		return
+	}
+	st.mw.SetTitle(tr("CMP 40HX Unlock Manager v3.0.0", "Менеджер разблокировки CMP 40HX v3.0.0", "CMP 40HX 解锁管理器 v3.0.0"))
+	if st.langLabel != nil {
+		st.langLabel.SetText(tr("Language:", "Язык:", "语言："))
+	}
+	if st.gbInstall != nil {
+		st.gbInstall.SetTitle(tr("1. Components and environment (missing items are preselected)", "1. Компоненты и окружение (недостающие пункты выбраны)", "① 组件安装与环境设置 (按当前状态预勾选; 勾选 = 执行/刷新)"))
+	}
+	if st.gbPolicy != nil {
+		st.gbPolicy.SetTitle(tr("2. Gen2 policy (changes apply immediately)", "2. Политика Gen2 (изменения применяются сразу)", "② Gen2 策略 (保存即生效; 登录任务与 -gen2 读取, 详见 README §2.5)"))
+	}
+	if st.gbLog != nil {
+		st.gbLog.SetTitle(tr("3. Operation log (live)", "3. Журнал операций (онлайн)", "③ 操作日志 (实时)"))
+	}
+	if st.tip != nil && len(st.lastScan) == 0 {
+		st.tip.SetText(tr("Scanning environment...", "Проверка окружения...", "正在扫描环境…"))
+	}
+	if st.ckGsp != nil {
+		st.ckGsp.SetText(tr("Enable GSP (EnableGpuFirmware=1)", "Включить GSP (EnableGpuFirmware=1)", "GSP 启用 (EnableGpuFirmware=1)"))
+		st.ckEfi.SetText(tr("Compute EFI + firmware boot entry", "EFI разблокировки + запись загрузки", "算力 EFI + 固件启动项"))
+		st.ckDrv.SetText(tr("Deploy Gen2 drivers + Defender exclusions", "Установить драйверы Gen2 + исключения Defender", "Gen2 驱动部署 + Defender 排除"))
+		st.ckTask.SetText(tr("Gen2 login auto-start", "Автозапуск Gen2 при входе", "Gen2 登录自启"))
+		st.ckFast.SetText(tr("Power: disable Fast Startup", "Питание: отключить быстрый запуск", "电源: 关闭快速启动"))
+		st.ckAspm.SetText(tr("Power: disable PCIe link power saving", "Питание: отключить энергосбережение PCIe", "电源: 关闭 PCIe 链路省电"))
+		st.ckPerf.SetText(tr("Power: high-performance plan", "Питание: план высокой производительности", "电源: 高性能电源计划"))
+		st.ckDefOff.SetText(tr("Disable Defender real-time protection", "Отключить защиту Defender в реальном времени", "关闭 Defender 实时防护"))
+	}
+	if st.pbInstall != nil {
+		st.pbInstall.SetText(tr("Install selected", "Установить выбранное", "安装所选组件"))
+		st.pbFull.SetText(tr("Full installation", "Полная установка", "一键完整安装 (全流程)"))
+		st.pbSave.SetText(tr("Save policy", "Сохранить политику", "保存策略"))
+		st.pbGen2.SetText(tr("Run Gen2 now (this run only)", "Запустить Gen2 сейчас (только этот запуск)", "立即执行 Gen2 (仅本次解锁)"))
+		st.pbGen2Install.SetText(tr("Run Gen2 and install auto-start", "Запустить Gen2 и установить автозапуск", "执行 Gen2 并安装自启 (本次+开机自动)"))
+	}
+	if st.lblPolicy != nil {
+		st.lblPolicy.SetText(tr("Driver policy: how the two Gen2 drivers are handled after unlocking", "Политика драйверов: что делать с двумя драйверами Gen2 после разблокировки", "驱动策略: Gen2 解锁用的两个驱动, 跑完后怎么处理"))
+	}
+	if st.lblPolicyModes != nil {
+		st.lblPolicyModes.SetText(tr("1. Unload after use (default)   2. Retry on failure   3. Resident watchdog", "1. Выгружать после работы (по умолчанию)   2. Повторять при ошибке   3. Постоянный watchdog", "① 用完即卸(默认, 每次自动清理, 游戏/反作弊最干净)   ② 失败自动重试   ③ 常驻守护(驱动保留, 每分钟自查 Gen2, TLS 丢失自动重训)"))
+	}
+	if st.rbStrategy[0] != nil {
+		st.rbStrategy[0].SetText(tr("Unload after use (default)", "Выгружать после использования (по умолчанию)", "用完即卸 (默认/推荐)"))
+		st.rbStrategy[1].SetText(tr("Retry on failure", "Повторять при ошибке", "失败自动重试"))
+		st.rbStrategy[2].SetText(tr("Resident watchdog", "Постоянный watchdog", "常驻守护 (定时看 Gen2)"))
+	}
+	if st.ckAutoHard != nil {
+		st.ckAutoHard.SetText(tr("Automatically use Stage2 fallback when Gen2 is not achieved (Link Disable + PnP recovery)", "Автоматически использовать Stage2, если Gen2 не достигнут (Link Disable + восстановление PnP)", "Gen2 未达成时自动执行 Stage2 回退 (Link Disable + PnP 恢复; 关掉可避免唯一显示卡登录后瞬断数秒)"))
+	}
+	if st.lblRetry != nil {
+		st.lblRetry.SetText(tr("Retry count:", "Повторы:", "失败自动重试:"))
+	}
+	if st.lblRetrySep != nil {
+		st.lblRetrySep.SetText(tr(" / interval:", " / интервал:", "次 / 间隔:"))
+	}
+	if st.lblMinutes != nil {
+		st.lblMinutes.SetText(tr("minutes", "мин", "分钟"))
 	}
 }
 
@@ -230,33 +299,33 @@ func (st *guiState) summaryText(items []statusItem) string {
 		m[it.name] = it
 	}
 	if it, ok := m["40HX 显卡"]; ok && !it.ok {
-		return "⚠ 未检测到 40HX — 请先确认显卡插好且驱动已装, 否则安装无意义"
+		return tr("WARNING: CMP 40HX not detected - check the card and driver before installing", "ВНИМАНИЕ: CMP 40HX не обнаружена - проверьте карту и драйвер перед установкой", "⚠ 未检测到 40HX — 请先确认显卡插好且驱动已装, 否则安装无意义")
 	}
 	var warns []string
 	if it, ok := m["Secure Boot"]; ok && !it.ok {
-		warns = append(warns, "Secure Boot 开启, 需进 BIOS 关闭")
+		warns = append(warns, tr("Secure Boot is enabled; disable it in BIOS", "Secure Boot включен; отключите его в BIOS", "Secure Boot 开启, 需进 BIOS 关闭"))
 	}
 	if it, ok := m["引导模式"]; ok && !it.ok {
-		warns = append(warns, "Legacy+MBR 引导, 算力 EFI 装不上(需 mbr2gpt 转 GPT)")
+		warns = append(warns, tr("Legacy+MBR boot; convert the disk with mbr2gpt before deploying the compute EFI", "Загрузка Legacy+MBR; перед установкой compute EFI конвертируйте диск через mbr2gpt", "Legacy+MBR 引导, 算力 EFI 装不上(需 mbr2gpt 转 GPT)"))
 	}
 	if it, ok := m["Gen2 驱动(从未部署)"]; ok && !it.ok {
-		warns = append(warns, "Gen2 驱动从未部署")
+		warns = append(warns, tr("Gen2 drivers have not been deployed", "Драйверы Gen2 еще не установлены", "Gen2 驱动从未部署"))
 	}
 	if it, ok := m["Gen2 登录任务"]; ok && !it.ok {
-		warns = append(warns, "Gen2 登录自启未注册")
+		warns = append(warns, tr("Gen2 login auto-start is not registered", "Автозапуск Gen2 при входе не зарегистрирован", "Gen2 登录自启未注册"))
 	}
 	// 启动项: 仅 UEFI 下检查(存在但不在首位 / 未创建)
 	if it, ok := m["固件启动项"]; ok && !it.ok {
 		if bl, ok2 := m["引导模式"]; !ok2 || bl.ok {
 			if strings.Contains(it.note, "不在") {
-				warns = append(warns, "启动项存在但不在首位, 需 BIOS 置顶")
+				warns = append(warns, tr("The boot entry exists but is not first; move it to the top in BIOS", "Запись загрузки есть, но не первая; поднимите ее на первое место в BIOS", "启动项存在但不在首位, 需 BIOS 置顶"))
 			} else {
-				warns = append(warns, "固件启动项未创建")
+				warns = append(warns, tr("Firmware boot entry is missing", "Запись загрузки прошивки отсутствует", "固件启动项未创建"))
 			}
 		}
 	}
 	if len(warns) == 0 {
-		return "✓ 环境就绪 — 缺失组件已自动预勾, 点[安装所选组件]或[一键完整安装]即可"
+		return tr("Environment ready - missing components are preselected; choose Install selected or Full installation", "Окружение готово - недостающие компоненты выбраны; нажмите Установить выбранное или Полная установка", "✓ 环境就绪 — 缺失组件已自动预勾, 点[安装所选组件]或[一键完整安装]即可")
 	}
 	s := "⚠ " + strings.Join(warns, "; ")
 	if r := []rune(s); len(r) > 90 {
@@ -530,33 +599,47 @@ func runGUI() {
 
 	createErr := MainWindow{
 		AssignTo: &st.mw,
-		Title:    "CMP 40HX 解锁管理器 v3.0.0",
+		Title:    tr("CMP 40HX Unlock Manager v3.0.0", "Менеджер разблокировки CMP 40HX v3.0.0", "CMP 40HX 解锁管理器 v3.0.0"),
 		MinSize:  Size{Width: 780, Height: 660},
 		Size:     Size{Width: 860, Height: 800},
 		Layout:   VBox{Spacing: 6},
 		Children: []Widget{
-			GroupBox{
-				Title:  "① 组件安装与环境设置 (按当前状态预勾选; 勾选 = 执行/刷新)",
-				Layout: VBox{Spacing: 4},
+			Composite{
+				Layout: HBox{Spacing: 6},
 				Children: []Widget{
-					Label{AssignTo: &st.tip, Text: "正在扫描环境…"},
+					Label{AssignTo: &st.langLabel, Text: tr("Language:", "Язык:", "语言：")},
+					ComboBox{AssignTo: &st.langBox, Model: []string{"English", "Русский", "中文"}, CurrentIndex: languageIndex(), OnCurrentIndexChanged: func() {
+						if st.langBox != nil {
+							setLanguage(st.langBox.CurrentIndex())
+							st.refreshTexts()
+							fmt.Println(tr("[i] Language changed.", "[i] Язык изменен.", "[i] 语言已切换。"))
+						}
+					}},
+				},
+			},
+			GroupBox{
+				AssignTo: &st.gbInstall,
+				Title:    tr("1. Components and environment (missing items are preselected)", "1. Компоненты и окружение (недостающие пункты выбраны)", "① 组件安装与环境设置 (按当前状态预勾选; 勾选 = 执行/刷新)"),
+				Layout:   VBox{Spacing: 4},
+				Children: []Widget{
+					Label{AssignTo: &st.tip, Text: tr("Scanning environment...", "Проверка окружения...", "正在扫描环境…")},
 					Composite{
 						Layout: Grid{Columns: 2},
 						Children: []Widget{
-							CheckBox{AssignTo: &st.ckGsp, Text: "GSP 启用 (EnableGpuFirmware=1)"},
-							CheckBox{AssignTo: &st.ckEfi, Text: "算力 EFI + 固件启动项"},
-							CheckBox{AssignTo: &st.ckDrv, Text: "Gen2 驱动部署 + Defender 排除"},
-							CheckBox{AssignTo: &st.ckTask, Text: "Gen2 登录自启"},
-							CheckBox{AssignTo: &st.ckFast, Text: "电源: 关闭快速启动"},
-							CheckBox{AssignTo: &st.ckAspm, Text: "电源: 关闭 PCIe 链路省电"},
-							CheckBox{AssignTo: &st.ckPerf, Text: "电源: 高性能电源计划"},
-							CheckBox{AssignTo: &st.ckDefOff, Text: "关闭 Defender 实时防护"},
+							CheckBox{AssignTo: &st.ckGsp, Text: tr("Enable GSP (EnableGpuFirmware=1)", "Включить GSP (EnableGpuFirmware=1)", "GSP 启用 (EnableGpuFirmware=1)")},
+							CheckBox{AssignTo: &st.ckEfi, Text: tr("Compute EFI + firmware boot entry", "EFI разблокировки + запись загрузки", "算力 EFI + 固件启动项")},
+							CheckBox{AssignTo: &st.ckDrv, Text: tr("Deploy Gen2 drivers + Defender exclusions", "Установить драйверы Gen2 + исключения Defender", "Gen2 驱动部署 + Defender 排除")},
+							CheckBox{AssignTo: &st.ckTask, Text: tr("Gen2 login auto-start", "Автозапуск Gen2 при входе", "Gen2 登录自启")},
+							CheckBox{AssignTo: &st.ckFast, Text: tr("Power: disable Fast Startup", "Питание: отключить быстрый запуск", "电源: 关闭快速启动")},
+							CheckBox{AssignTo: &st.ckAspm, Text: tr("Power: disable PCIe link power saving", "Питание: отключить энергосбережение PCIe", "电源: 关闭 PCIe 链路省电")},
+							CheckBox{AssignTo: &st.ckPerf, Text: tr("Power: high-performance plan", "Питание: план высокой производительности", "电源: 高性能电源计划")},
+							CheckBox{AssignTo: &st.ckDefOff, Text: tr("Disable Defender real-time protection", "Отключить защиту Defender в реальном времени", "关闭 Defender 实时防护")},
 						},
 					},
 					Composite{
 						Layout: HBox{},
 						Children: []Widget{
-							PushButton{AssignTo: &st.pbInstall, Text: "安装所选组件", OnClicked: func() {
+							PushButton{AssignTo: &st.pbInstall, Text: tr("Install selected", "Установить выбранное", "安装所选组件"), OnClicked: func() {
 								// begin 在 UI 线程同步抢锁: 抢到即占住, 连点到不了这里
 								if !st.begin("组件安装") {
 									return
@@ -573,7 +656,7 @@ func runGUI() {
 								}
 								go st.installSelected(sel)
 							}},
-							PushButton{AssignTo: &st.pbFull, Text: "一键完整安装 (全流程)", OnClicked: func() {
+							PushButton{AssignTo: &st.pbFull, Text: tr("Full installation", "Полная установка", "一键完整安装 (全流程)"), OnClicked: func() {
 								if !st.begin("完整安装") {
 									return
 								}
@@ -591,40 +674,41 @@ func runGUI() {
 				},
 			},
 			GroupBox{
-				Title:  "② Gen2 策略 (保存即生效; 登录任务与 -gen2 读取, 详见 README §2.5)",
-				Layout: VBox{Spacing: 4},
+				AssignTo: &st.gbPolicy,
+				Title:    tr("2. Gen2 policy (changes apply immediately)", "2. Политика Gen2 (изменения применяются сразу)", "② Gen2 策略 (保存即生效; 登录任务与 -gen2 读取, 详见 README §2.5)"),
+				Layout:   VBox{Spacing: 4},
 				Children: []Widget{
-					Label{Text: "驱动策略: Gen2 解锁用的两个驱动, 跑完后怎么处理"},
-					Label{Text: "① 用完即卸(默认, 每次自动清理, 游戏/反作弊最干净)   ② 失败自动重试   ③ 常驻守护(驱动保留, 每分钟自查 Gen2, TLS 丢失自动重训)"},
+					Label{AssignTo: &st.lblPolicy, Text: tr("Driver policy: how the two Gen2 drivers are handled after unlocking", "Политика драйверов: что делать с двумя драйверами Gen2 после разблокировки", "驱动策略: Gen2 解锁用的两个驱动, 跑完后怎么处理")},
+					Label{AssignTo: &st.lblPolicyModes, Text: tr("1. Unload after use (default)   2. Retry on failure   3. Resident watchdog", "1. Выгружать после работы (по умолчанию)   2. Повторять при ошибке   3. Постоянный watchdog", "① 用完即卸(默认, 每次自动清理, 游戏/反作弊最干净)   ② 失败自动重试   ③ 常驻守护(驱动保留, 每分钟自查 Gen2, TLS 丢失自动重训)")},
 					Composite{
 						Layout: Grid{Columns: 3},
 						Children: []Widget{
-							RadioButton{AssignTo: &st.rbStrategy[0], Text: "用完即卸 (默认/推荐)"},
-							RadioButton{AssignTo: &st.rbStrategy[1], Text: "失败自动重试"},
-							RadioButton{AssignTo: &st.rbStrategy[2], Text: "常驻守护 (定时看 Gen2)"},
+							RadioButton{AssignTo: &st.rbStrategy[0], Text: tr("Unload after use (default)", "Выгружать после использования (по умолчанию)", "用完即卸 (默认/推荐)")},
+							RadioButton{AssignTo: &st.rbStrategy[1], Text: tr("Retry on failure", "Повторять при ошибке", "失败自动重试")},
+							RadioButton{AssignTo: &st.rbStrategy[2], Text: tr("Resident watchdog", "Постоянный watchdog", "常驻守护 (定时看 Gen2)")},
 						},
 					},
-					CheckBox{AssignTo: &st.ckAutoHard, Text: "Gen2 未达成时自动执行 Stage2 回退 (Link Disable + PnP 恢复; 关掉可避免唯一显示卡登录后瞬断数秒)"},
+					CheckBox{AssignTo: &st.ckAutoHard, Text: tr("Automatically use Stage2 fallback when Gen2 is not achieved (Link Disable + PnP recovery)", "Автоматически использовать Stage2, если Gen2 не достигнут (Link Disable + восстановление PnP)", "Gen2 未达成时自动执行 Stage2 回退 (Link Disable + PnP 恢复; 关掉可避免唯一显示卡登录后瞬断数秒)")},
 					Composite{
 						Layout: HBox{},
 						Children: []Widget{
-							Label{Text: "失败自动重试:"},
+							Label{AssignTo: &st.lblRetry, Text: tr("Retry count:", "Повторы:", "失败自动重试:")},
 							NumberEdit{AssignTo: &st.neRetryCnt, MinValue: 0.0, MaxValue: 12.0, MinSize: Size{Width: 56}},
-							Label{Text: "次 / 间隔:"},
+							Label{AssignTo: &st.lblRetrySep, Text: tr(" / interval:", " / интервал:", "次 / 间隔:")},
 							NumberEdit{AssignTo: &st.neRetryMin, MinValue: 1.0, MaxValue: 240.0, MinSize: Size{Width: 56}},
-							Label{Text: "分钟"},
+							Label{AssignTo: &st.lblMinutes, Text: tr("minutes", "мин", "分钟")},
 						},
 					},
 					Composite{
 						Layout: HBox{},
 						Children: []Widget{
-							PushButton{AssignTo: &st.pbSave, Text: "保存策略", OnClicked: func() {
+							PushButton{AssignTo: &st.pbSave, Text: tr("Save policy", "Сохранить политику", "保存策略"), OnClicked: func() {
 								if !st.begin("保存策略") {
 									return
 								}
 								go st.savePolicy()
 							}},
-							PushButton{AssignTo: &st.pbGen2, Text: "立即执行 Gen2 (仅本次解锁)", OnClicked: func() {
+							PushButton{AssignTo: &st.pbGen2, Text: tr("Run Gen2 now (this run only)", "Запустить Gen2 сейчас (только этот запуск)", "立即执行 Gen2 (仅本次解锁)"), OnClicked: func() {
 								if !st.begin("立即执行 Gen2") {
 									return
 								}
@@ -642,7 +726,7 @@ func runGUI() {
 									st.scanOnce() // Gen2 后驱动/终态可能变化, 更新提示
 								}()
 							}},
-							PushButton{AssignTo: &st.pbGen2Install, Text: "执行 Gen2 并安装自启 (本次+开机自动)", OnClicked: func() {
+							PushButton{AssignTo: &st.pbGen2Install, Text: tr("Run Gen2 and install auto-start", "Запустить Gen2 и установить автозапуск", "执行 Gen2 并安装自启 (本次+开机自动)"), OnClicked: func() {
 								if !st.begin("解锁并安装自启") {
 									return
 								}
@@ -678,8 +762,9 @@ func runGUI() {
 				},
 			},
 			GroupBox{
-				Title:  "③ 操作日志 (实时)",
-				Layout: VBox{},
+				AssignTo: &st.gbLog,
+				Title:    tr("3. Operation log (live)", "3. Журнал операций (онлайн)", "③ 操作日志 (实时)"),
+				Layout:   VBox{},
 				Children: []Widget{
 					TextEdit{AssignTo: &st.teLog, ReadOnly: true, VScroll: true,
 						MinSize: Size{Height: 120}, StretchFactor: 2},
@@ -694,10 +779,11 @@ func runGUI() {
 	st.log.mw = st.mw
 	st.log.te = st.teLog
 	AttachLogSink(st.log)
+	st.refreshTexts()
 
 	st.loadPolicyUI() // Gen2 策略回读(UI 线程, Run 之前)
 
-	fmt.Println("CMP 40HX 解锁管理器 v3.0.0 已启动(管理员)。")
+	fmt.Println(tr("CMP 40HX Unlock Manager v3.0.0 started (administrator).", "Менеджер разблокировки CMP 40HX v3.0.0 запущен (администратор).", "CMP 40HX 解锁管理器 v3.0.0 已启动(管理员)。"))
 	go func() {
 		// 打开自动扫描一次: 预勾选 + 顶部提示; 期间禁用执行按钮防并发。
 		// 结果由 applySmartDefaults 打印([i] 已预勾… / [i] 组件均已就绪…)。

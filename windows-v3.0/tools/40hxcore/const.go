@@ -8,6 +8,9 @@ package hxcore
 const (
 	// 40HX PCI 硬件 ID (伪装驱动改不了它 — v2.4.2 反查的根基)
 	GpuVenDev = "VEN_10DE&DEV_1F0B"
+	// Registry class keys may contain several NVIDIA adapters.  Any fallback
+	// lookup must still be tied to this hardware ID, never to a display name.
+	GpuMatchID = `PCI\VEN_10DE&DEV_1F0B`
 
 	// 显示适配器 Class 注册表路径与子键值
 	GpuClassPath  = `SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}`

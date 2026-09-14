@@ -18,6 +18,7 @@
 //     不走完整 UEFI 引导", 后者减少空闲降到 Gen1 被误读为解锁失败
 //  5. Gen2 核心增强: LNKCTL2 读改写(不清高位) + root/GPU 交替重训最多 4 轮 +
 //     以 TLS 目标速率判成败(空闲省电降速 Gen1 不再误报失败)
+//
 // v2.6.0 关键加固(自启动通道设计与并发安全, 回应"多自启动路径怕出问题"):
 //  1. Gen2 单实例内核互斥体(Global\40HXGen2SingleInstance): SYSTEM 任务 / Run 键 /
 //     手动 -gen2 即使并发触发, 也仅一个进程进入"加载-卸载 BYOVD 驱动 + 抢 BAR0"
@@ -26,6 +27,7 @@
 //     静默交权), SYSTEM 任务延迟 30s 再确认; 其余 13 类路径(HKCU/HKLM Run 之外)
 //     均运行于用户态、无法 sc start 内核驱动, 故不采用(详见设计文档)
 //  3. 定位 40HX 失败重试最多 3 次(间隔 2s), 容忍慢速 GPU 初始化导致的假失败
+//
 // v2.4 关键变更(社区兼容):
 //  1. embed EFI 回到 V70 原版 (793d765e, 用户实测解锁成功) — v2.1/v2.2 精简版失败教训
 //  2. ESP 双路部署: \EFI\40HX\40HXUNLK.EFI (BCD 主路径)
@@ -87,6 +89,7 @@ const (
 )
 
 func main() {
+	initLanguage()
 	// GUI 无窗口版(v1.1): 输出全部镜像到日志(默认 %TEMP%\40HX_installer.log, 可 -log 指定)
 	setupLog("40HX_installer.log")
 	// v2.6.0: 双击(无参数)或 UAC 提权重启(-elevated)默认进入 GUI 管理界面;
@@ -177,7 +180,7 @@ func selfElevate() {
 	// 追加 -elevated 标记: 新实例若仍非管理员则禁止再次提权(防无限循环)
 	args := append([]string{}, os.Args[1:]...)
 	args = append(args, "-elevated")
-	params, _ := syscall.UTF16PtrFromString(strings.Join(args, " "))
+	params, _ := syscall.UTF16PtrFromString(hxcore.JoinWindowsArgs(args))
 	r, _, _ := procShellExecuteW.Call(0,
 		uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)),
 		uintptr(unsafe.Pointer(params)), 0, 1)
@@ -257,8 +260,9 @@ func AttachLogSink(w io.Writer) {
 		for {
 			n, rerr := r.Read(buf)
 			if n > 0 {
-				orig.Write(buf[:n]) // 落日志文件(GUI 模式下失败可忽略)
-				w.Write(buf[:n])    // 喂 GUI 日志面板
+				localized := []byte(localizeLogText(string(buf[:n])))
+				orig.Write(localized) // 落日志文件(GUI 模式下失败可忽略)
+				w.Write(localized)    // 喂 GUI 日志面板
 			}
 			if rerr != nil {
 				return
@@ -300,11 +304,12 @@ func argIndex(name string) int {
 }
 
 func printHelp() {
-	fmt.Println("CMP 40HX Windows 解锁一键安装工具")
-	fmt.Println("  用法: 40HXInstaller.exe            # 安装(需管理员)")
-	fmt.Println("       40HXInstaller.exe -gen2      # 立即执行 Gen2 解锁")
-	fmt.Println("       40HXInstaller.exe -uninstall # 卸载")
-	fmt.Println("       40HXInstaller.exe -status    # 状态")
+	fmt.Println(tr("CMP 40HX Windows Unlock Installer", "Установщик разблокировки CMP 40HX для Windows", "CMP 40HX Windows 解锁一键安装工具"))
+	fmt.Println(tr("  Usage: 40HXInstaller.exe            # install (administrator required)", "  Использование: 40HXInstaller.exe            # установка (нужны права администратора)", "  用法: 40HXInstaller.exe            # 安装(需管理员)"))
+	fmt.Println(tr("          40HXInstaller.exe -gen2      # run Gen2 unlock now", "          40HXInstaller.exe -gen2      # запустить разблокировку Gen2", "       40HXInstaller.exe -gen2      # 立即执行 Gen2 解锁"))
+	fmt.Println(tr("          40HXInstaller.exe -uninstall # uninstall", "          40HXInstaller.exe -uninstall # удалить", "       40HXInstaller.exe -uninstall # 卸载"))
+	fmt.Println(tr("          40HXInstaller.exe -status    # show status", "          40HXInstaller.exe -status    # показать состояние", "       40HXInstaller.exe -status    # 状态"))
+	fmt.Println(tr("          40HXInstaller.exe -lang en|ru|zh # select language", "          40HXInstaller.exe -lang en|ru|zh # выбрать язык", "       40HXInstaller.exe -lang en|ru|zh # 选择语言"))
 }
 
 // ===================== 底层 =====================
@@ -892,7 +897,7 @@ func install() {
 	}
 	msgbox("40HX 安装器 (安装完成)",
 		"✅ 安装完成! "+map[bool]string{true: "重启后将自动执行解锁。", false: "Gen2 部分已就绪。"}[efiOK]+"\n\n"+
-			efiNote +
+			efiNote+
 			"\n重启进系统后:\n"+
 			"  · 双击同目录的 40HXCheck.exe 验证 — 显示\n"+
 			"    '解锁成功: Tensor 满血(SS0=0x88888888)' 即完成\n"+
@@ -1030,10 +1035,6 @@ func redeployDriverFile(sysFile string) bool {
 	return true
 }
 
-
-
-
-
 func ensureSvcLoaded(name string, sysFile string) {
 	if out, _ := hxcore.RunOut("sc.exe", "query", name); strings.Contains(out, "RUNNING") {
 		return // 已运行
@@ -1047,7 +1048,7 @@ func ensureSvcLoaded(name string, sysFile string) {
 	if err != nil {
 		// 首次启动失败 - 常见于杀软删除驱动文件或服务配置被改为 disabled。
 		// 删除服务 -> 重新部署 -> 用新建服务重试一次。
-		
+
 		hxcore.RunOut("sc.exe", "delete", name)
 		redeployDriverFile(sysFile)
 		hxcore.RunOut("sc.exe", "create", name, "type=", "kernel", "start=", "demand", "binPath=", bin)
@@ -1153,10 +1154,12 @@ func setRunKey() {
 // schtasks /create 退出码 0 = 任务已提交给计划任务服务(真实成功)。
 //
 // 权威判据必须且只能是"退出码 0", 不能依赖其 stdout 中的 "SUCCESS/成功" 串:
-//  · 中文 Windows 上 "成功" 由 schtasks 以系统 ANSI/GBK 代码页写出, 而 Go 把
-//    管道字节当 UTF-8, 字面量 "成功"(UTF-8) 与 GBK 字节不匹配 -> Contains 失败;
-//  · 部分环境 schtasks /create 的 stdout 甚至为空(成功信息走别处), 同样无串可匹配;
-//  · 此前依赖 "SUCCESS/成功" 串 -> 串缺失即误判, 实测在中文机上稳定复现"假失败"。
+//
+//	· 中文 Windows 上 "成功" 由 schtasks 以系统 ANSI/GBK 代码页写出, 而 Go 把
+//	  管道字节当 UTF-8, 字面量 "成功"(UTF-8) 与 GBK 字节不匹配 -> Contains 失败;
+//	· 部分环境 schtasks /create 的 stdout 甚至为空(成功信息走别处), 同样无串可匹配;
+//	· 此前依赖 "SUCCESS/成功" 串 -> 串缺失即误判, 实测在中文机上稳定复现"假失败"。
+//
 // 退出码 0 = 任务已写入计划服务, 与语言/代码页无关, 是可靠判据。
 // (紧随其后的 /query 仍存在提交延迟竞态, 仅作可选信息, 不再作为成败判据。)
 func setupGen2Task() error {

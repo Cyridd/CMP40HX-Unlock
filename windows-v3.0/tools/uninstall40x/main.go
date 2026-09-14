@@ -81,7 +81,7 @@ func selfElevate() {
 	file, _ := syscall.UTF16PtrFromString(exe)
 	args := append([]string{}, os.Args[1:]...)
 	args = append(args, "-elevated")
-	params, _ := syscall.UTF16PtrFromString(strings.Join(args, " "))
+	params, _ := syscall.UTF16PtrFromString(hxcore.JoinWindowsArgs(args))
 	r, _, _ := procShellExecuteW.Call(0,
 		uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)),
 		uintptr(unsafe.Pointer(params)), 0, 1)

@@ -1,14 +1,14 @@
 /*
- * unlock_v2.c — NVIDIA CMP 90HX (GA102) full unlock — UEFI application
+ * CMP40HX UEFI unlock application (TU106 / 10de:1f0b)
  *
  * One binary does two things, in this order:
  *   1. Unlock the card (protocol below).
  *   2. Hand the machine to the OS WITHOUT any reset, so the unlocked state
  *      survives into Windows — a POST/VBIOS re-init would re-lock it.
  *
- * Target hardware : NVIDIA CMP 90HX — GA102 die, 10 GB GDDR6X, PCI 10de:220d,
+ * Target hardware : NVIDIA CMP 40HX — TU106 die, 8 GB GDDR6, PCI 10de:1f0b,
  *                   sold as a mining-only card: compute and render engines
- *                   are fused off by firmware protection registers.
+ *                   are restricted by firmware protection registers.
  * Toolchain       : gnu-efi 3.0+ / gcc — see BUILDING.md and src/build.sh
  *
  * ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@
  *   3. Build WPR meta (256 B), field-for-field like kgspPopulateWprMeta:
  *      radix3 page-table over .fwimage (~84 MB read from USB via BlockIo),
  *      V67 payload as the "signature", bootloader offsets, heap/FRTS
- *      geometry for a 10 GB framebuffer.
+ *      geometry for an 8 GB framebuffer.
  *   4. Early path (the one that works): BL(ucodeId=1) on GSP -> FWSEC(FRTS)
  *      on GSP latches WPR2 -> ResetIntoRiscv + LibosBootArgs -> run the
  *      SEC2 booter load FIRST on the fresh SEC2 (see early_unlock_path).
@@ -53,7 +53,7 @@
  * Build flags — they decide which phases even exist in the binary!
  * ---------------------------------------------------------------------------
  *   RELEASE_BUILD        release behaviour: no pauses, return-to-firmware
- *   MULTI_CARD           enumerate every 220d; NVRAM iteration between cards
+ *   MULTI_CARD           enumerate every 1f0b; NVRAM iteration between cards
  *   PCIE_GEN2_REJOIN     include render-mask table + fire machinery.
  *                        WITHOUT IT THE RENDER PHASE IS NOT EVEN COMPILED
  *                        (that is how v3.01 shipped compute-only by mistake)
@@ -80,10 +80,8 @@
  *   gsp_ga10x.bin                  NOT embedded: read from USB at runtime.
  *                                  Take it from the NVIDIA 610.43.03 package!
  *
- * Runtime messages are intentionally Russian; the version banner printed at
- * start identifies the exact build variant. Deep inline comments kept their
- * original Russian wording and historical experiment tags (v2.xx) — they
- * encode hard-won platform knowledge; see docs/GOTCHAS.md for the digest.
+ * Runtime messages are English. Historical GA102 helper code is retained only
+ * for research and is excluded from the production DIRECT_SEC2 build.
  */
 
 #include <efi.h>
@@ -253,7 +251,7 @@ u40x_entry(EFI_HANDLE ImageHandle_, EFI_SYSTEM_TABLE *SystemTable_)
     return efi_main(ImageHandle_, SystemTable_);
 }
 
-/* ==== CMP90HX/GA102 registers (BAR0 MMIO) ====
+/* ==== CMP40HX/TU106 registers (BAR0 MMIO) ====
  * PLM/SS0/SS1 are the actual lock bits; the rest is referenced by the
  * unlock flow or diagnostics. Values verified against open-gpu-kernel-
  * modules GA102 regmaps. */
@@ -334,8 +332,9 @@ u40x_entry(EFI_HANDLE ImageHandle_, EFI_SYSTEM_TABLE *SystemTable_)
 /* ==== Boot (SEC2) ucode layout constants — ground truth from bindata ====
  *
  * v55 修正：这些几何量是 CHIP 相关的！unlock_v2 原值（imem 0x8900 @+0x100、
- * data 0x8A00/0x6200、patchLoc 0x8A10、ucodeId=3）来自 90HX GA102。40HX 是
- * TU106，驱动用 TU102 archive（kgspGetBinArchiveBooterLoadUcode_TU102），
+ * data 0x8A00/0x6200, patchLoc 0x8A10, and ucodeId=3) came from the legacy
+ * GA102 flow. CMP 40HX is TU106; the driver uses the TU102 archive
+ * (kgspGetBinArchiveBooterLoadUcode_TU102),
  * nv616 booter (md5 52a65b17) 的真实几何 = 本地 610.43.03 源码
  * g_bindata_...TU102.c 的 HEADER_PROD（raw-deflate 解压 36B）：
  *   osCodeOffset=0x0   osCodeSize=0x100
@@ -439,8 +438,8 @@ extern const UINT8 booter_ucode_prod[];     /* PROD (стоковый, sig 0x303
 extern const UINT8 gsp_rm_boot_dbg[];      /* BL (GspRmBoot GA102), 0x6000 */
 #define GSP_RM_BOOT_SIZE  0x6000UL
 
-/* v2.28: FWSEC ucode (извлечён из VBIOS 10de:220d через драйвер 610.43.03,
- * см. V2-27-FWSEC-CAPTURED.md): 0xEA00 = code(0xE200) + data(0x800);
+/* v2.28: legacy GA102 FWSEC ucode (captured from the reference VBIOS through
+ * driver 610.43.03; see V2-27-FWSEC-CAPTURED.md): 0xEA00 = code(0xE200) + data(0x800);
  * сигнатура sig[2] (0x180, RSA3K) — выбрана fuse-версией (sigOffset=0x300). */
 extern const UINT8 fwsec_ga102_bin[];
 extern const UINT8 fwsec_ga102_sig[];
@@ -498,7 +497,7 @@ extern const UINT8 gsp_bl_tu102[];
 #define FWSEC_IFACE_OFF         0x0000001CUL   /* interfaceOffset */
 #define FWSEC_UCORE_ID          9
 #define FWSEC_ENGID_MASK        0x400
-#define FWSEC_FRTS_OFFSET       0x27FE00000ULL /* frtsOffset (10GB FB - 2MB) */
+#define FWSEC_FRTS_OFFSET       0x27FE00000ULL /* legacy GA102 path: 10GB FB - 2MB */
 #define FWSEC_CMD_FRTS          0x15           /* DMEM_MAPPER_V3_CMD_FRTS */
 #define FWSEC_SIG_SIZE          0x180
 
@@ -855,7 +854,7 @@ find_bridge_to(UINTN target_bus, UINTN *ob, UINTN *od, UINTN *of)
     UINTN ri, ci, b, d, f;
     rb_collect();
     if (!gRbAllN) {
-        Print(L"gen2: нет ни одного root bridge!\n");
+        Print(L"gen2: no root bridges found!\n");
         return FALSE;
     }
     Print(L"gen2: probe 00:01.0=%08x 00:1c.0=%08x (%d RB)\n",
@@ -923,7 +922,7 @@ alloc_below_4g(UINTN Pages, EFI_PHYSICAL_ADDRESS *Phys)
  * memdesc NV_MEMORY_CACHED). Наш ниже-4ГБ (0x7FB15000) — единственное
  * оставшееся различие с эталонным трейсом. Кандидаты 16MB-aligned,
  * фолбэк — ниже 4ГБ. */
-static UINT64 cmp90_next_high_slot = 0x110000000ULL;   /* v2.63: след. своб. слот */
+static UINT64 cmp40_next_high_slot = 0x110000000ULL;   /* next free high-memory slot */
 static EFI_STATUS
 alloc_fwsec_buffer(UINTN Pages, EFI_PHYSICAL_ADDRESS *Phys)
 {
@@ -934,12 +933,12 @@ alloc_fwsec_buffer(UINTN Pages, EFI_PHYSICAL_ADDRESS *Phys)
     EFI_STATUS st;
     UINTN i;
     for (i = 0; i < 12; i++) {
-        *Phys = cmp90_next_high_slot + i * 0x1000000ULL;
+        *Phys = cmp40_next_high_slot + i * 0x1000000ULL;
         st = uefi_call_wrapper(BS->AllocatePages, 4, AllocateAddress,
                                EfiReservedMemoryType, Pages, Phys);
         if (!EFI_ERROR(st)) {
-            cmp90_next_high_slot = *Phys + ((UINT64)Pages << 12) + 0x1000000ULL;
-            Print(L"alloc_high: OK @0x%lx (%d стр)\n", *Phys, (UINT32)Pages);
+            cmp40_next_high_slot = *Phys + ((UINT64)Pages << 12) + 0x1000000ULL;
+            Print(L"alloc_high: OK @0x%lx (%d pages)\n", *Phys, (UINT32)Pages);
             return EFI_SUCCESS;
         }
     }
@@ -951,12 +950,12 @@ alloc_fwsec_buffer(UINTN Pages, EFI_PHYSICAL_ADDRESS *Phys)
             *Phys = cand[i];
             if (!EFI_ERROR(uefi_call_wrapper(BS->AllocatePages, 4, AllocateAddress,
                                              EfiReservedMemoryType, Pages, Phys))) {
-                Print(L"alloc_high: OK (статик) @0x%lx\n", *Phys);
+                Print(L"alloc_high: OK (static slot) @0x%lx\n", *Phys);
                 return EFI_SUCCESS;
             }
         }
     }
-    Print(L"alloc_high: выше 4ГБ не вышло — фолбэк ниже 4ГБ\n");
+    Print(L"alloc_high: allocation above 4GB failed; falling back below 4GB\n");
     return alloc_below_4g(Pages, Phys);
 }
 
@@ -967,10 +966,10 @@ static void
 enable_mem_decode(void)
 {
     UINT32 cmd = cfg_read32(0x04);
-    Print(L"cfg 0x04 (command) до  = 0x%08x\n", cmd);
+    Print(L"cfg 0x04 (command) before = 0x%08x\n", cmd);
     cfg_write32(0x04, cmd | 0x6);   /* bit1=Memory Space, bit2=Bus Master */
     cmd = cfg_read32(0x04);
-    Print(L"cfg 0x04 (command) после = 0x%08x\n", cmd);
+    Print(L"cfg 0x04 (command) after  = 0x%08x\n", cmd);
 }
 
 /* ==== Quick state snapshot + "already unlocked" check ==== */
@@ -1002,9 +1001,9 @@ static void
 pause_screen(EFI_SYSTEM_TABLE *ST)
 {
 #if defined(EFI_AUTOTEST) || defined(RELEASE_BUILD)
-    Print(L"[паузы отключены]\n");
+    Print(L"[pauses disabled]\n");
 #else
-    Print(L"\n[Enter] — дальше...\n");
+    Print(L"\n[Enter] - continue...\n");
     uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
     WaitForSingleEvent(ST->ConIn->WaitForKey, 0);
     uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
@@ -1035,7 +1034,7 @@ diag_regs(EFI_SYSTEM_TABLE *ST)
     diag_one(L"SEC2_FBIF_CTL", 0x840624);
     pause_screen(ST);
 
-    Print(L"--- DIAG v2.10 GSP (только чтения) ---\n");
+    Print(L"--- DIAG v2.10 GSP (read-only) ---\n");
     diag_one(L"GSP_MBOX0", 0x110040);
     diag_one(L"GSP_MBOX1", 0x110044);
     diag_one(L"GSP_CPUCTL", 0x110100);
@@ -1048,11 +1047,11 @@ diag_regs(EFI_SYSTEM_TABLE *ST)
     diag_one(L"SS0", REG_FEAT_OVR_SM_SPD);
     diag_one(L"SS1", REG_FEAT_OVR_SM_SPD_1);
     diag_one(L"GFW", REG_GFW_BOOT_OK);
-    Print(L"--- DIAG v2.10 ЗАВЕРШЕНА ---\n");
+    Print(L"--- DIAG v2.10 COMPLETE ---\n");
     pause_screen(ST);
 }
 
-static BOOLEAN cmp90_eqi(const CHAR16 *a, const CHAR16 *b);
+static BOOLEAN cmp40_eqi(const CHAR16 *a, const CHAR16 *b);
 
 #ifdef ENDGAME_WARMRESET
 /* v2.90-WR: найти Boot#### с описанием "Windows Boot Manager" и выставить
@@ -1062,7 +1061,7 @@ static BOOLEAN set_bootnext_windows(void)
     static EFI_GUID gvGuid = EFI_GLOBAL_VARIABLE;
     UINT16 opt;
 
-    Print(L"v2.90-WR: скан Boot#### (Windows Boot Manager)...\n");
+    Print(L"v2.90-WR: scanning Boot#### (Windows Boot Manager)...\n");
     for (opt = 0; opt < 0xFFFF; opt++) {
         CHAR16 name[12];
         static UINT8 buf[2048];
@@ -1075,14 +1074,14 @@ static BOOLEAN set_bootnext_windows(void)
                                &attr, &sz, buf);
         /* v2.99o: прогресс каждые 256 слотов — видно, где застряли */
         if ((opt & 0xFF) == 0)
-            Print(L"v2.90-WR: скан %04X...\n", opt);
+            Print(L"v2.90-WR: scanning %04X...\n", opt);
         if (EFI_ERROR(st) || sz < 6) continue;
         {
             /* EFI_LOAD_OPTION: u32 Attributes, u16 FilePathListLength,
              * Description (CHAR16, NUL-терминированная) */
             CHAR16 *desc = (CHAR16 *)(buf + 6);
-            if (cmp90_eqi(desc, L"Windows Boot Manager")) {
-                Print(L"v2.90-WR: найден Boot%04X, пишу BootNext...\n", opt);
+            if (cmp40_eqi(desc, L"Windows Boot Manager")) {
+                Print(L"v2.90-WR: found Boot%04X; writing BootNext...\n", opt);
                 st = uefi_call_wrapper(RT->SetVariable, 6, L"BootNext", &gvGuid,
                     EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS |
                     EFI_VARIABLE_RUNTIME_ACCESS, 2, &opt);
@@ -1092,12 +1091,12 @@ static BOOLEAN set_bootnext_windows(void)
             }
         }
     }
-    Print(L"v2.90-WR: Boot#### с Windows Boot Manager не найден\n");
+    Print(L"v2.90-WR: no Boot#### entry for Windows Boot Manager found\n");
     return FALSE;
 }
 #endif
 
-/* ==== MULTI-CARD: unlock several 220d cards without rebooting ====
+/* ==== MULTI-CARD: unlock several CMP 40HX cards without rebooting ====
  * Each app run unlocks ITS card (index in an NVRAM variable), sets
  * BootNext to its own Boot#### entry and returns to firmware — no POST
  * happens, the unlock survives, firmware re-runs us from USB for the
@@ -1142,13 +1141,13 @@ static UINT32 mc_var_get(CHAR16 *name, BOOLEAN *ok)
 
 static VOID mc_vars_clear(void)
 {
-    uefi_call_wrapper(RT->SetVariable, 6, L"CMP90IDX", &mcGuid, 0, 0, NULL);
-    uefi_call_wrapper(RT->SetVariable, 6, L"CMP90CNT", &mcGuid, 0, 0, NULL);
+    uefi_call_wrapper(RT->SetVariable, 6, L"CMP40IDX", &mcGuid, 0, 0, NULL);
+    uefi_call_wrapper(RT->SetVariable, 6, L"CMP40CNT", &mcGuid, 0, 0, NULL);
 }
 
-/* Как find_cmp90hx, но собирает ВСЕ 220d (без раннего выхода) */
+/* Like find_cmp40hx, but collects every CMP 40HX (no early exit). */
 static void
-find_all_cmp90hx(void)
+find_all_cmp40hx(void)
 {
     EFI_HANDLE *RbHandles = NULL;
     UINTN RbCount = 0, i;
@@ -1226,14 +1225,14 @@ static BOOLEAN mc_set_bootnext_self(EFI_HANDLE ImageHandle)
     UINTN dpSize = 0;
     UINT32 attrs = 0x1;               /* LOAD_OPTION_ACTIVE */
     UINT16 fpl;
-    CHAR16 desc[] = L"CMP90HX unlock";
+    CHAR16 desc[] = L"CMP40HX unlock";
     UINT16 optNo;
     EFI_STATUS st;
     CHAR16 name[12];
 
     if (EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3, ImageHandle,
             &gEfiLoadedImageProtocolGuid, (VOID**)&li)) || !li->FilePath) {
-        Print(L"multi-card: нет LoadedImage/FilePath\n");
+        Print(L"multi-card: LoadedImage/FilePath is unavailable\n");
         return FALSE;
     }
     dp = li->FilePath;
@@ -1277,7 +1276,7 @@ static BOOLEAN mc_set_bootnext_self(EFI_HANDLE ImageHandle)
                                        StrLen(desc)) == 0;
             if (ours) break;                          /* переиспользуем */
         }
-        Print(L"mc: выбран слот %d, opt=%d байт (fpl=%d, dp=%d)\n",
+        Print(L"mc: selected slot %d, option=%d bytes (fpl=%d, dp=%d)\n",
               (INTN)optNo, (INTN)off, fpl, (INTN)dpSize);
     }
 
@@ -1285,13 +1284,13 @@ static BOOLEAN mc_set_bootnext_self(EFI_HANDLE ImageHandle)
         EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS |
         EFI_VARIABLE_RUNTIME_ACCESS, off, opt);
     if (EFI_ERROR(st)) {
-        Print(L"multi-card: Boot%04X запись: %r\n", (INTN)optNo, st);
+        Print(L"multi-card: Boot%04X write failed: %r\n", (INTN)optNo, st);
         return FALSE;
     }
     st = uefi_call_wrapper(RT->SetVariable, 6, L"BootNext", &gvGuid,
         EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS |
         EFI_VARIABLE_RUNTIME_ACCESS, 2, &optNo);
-    Print(L"multi-card: BootNext -> Boot%04X (сами): %r\n", (INTN)optNo, st);
+    Print(L"multi-card: BootNext -> Boot%04X (self): %r\n", (INTN)optNo, st);
     return !EFI_ERROR(st);
 }
 #endif /* MULTI_CARD */
@@ -1357,7 +1356,7 @@ set_gpu_time(void)
     else
     {
         /* RTC мёртв/не задан в EFI-контексте → константа 2026-08-19 00:00 UTC */
-        Print(L"time: GetTime недоступен/мусор — константа 2026-08-19\n");
+        Print(L"time: GetTime unavailable/invalid; using fallback 2026-08-19\n");
         t.Year = 2026; t.Month = 8; t.Day = 19;
         t.Hour = 0; t.Minute = 0; t.Second = 0;
     }
@@ -1433,7 +1432,7 @@ falcon_wait_scrub_done(UINT32 dmactlReg, UINT32 hwcfg2Reg, const CHAR16 *tag)
         }
         uefi_call_wrapper(BS->Stall, 1, 100);
     }
-    Print(L"%s: scrub-wait ТАЙМАУТ dmactl=0x%08x hwcfg2=0x%08x\n", tag, dct, hcfg);
+    Print(L"%s: scrub-wait TIMEOUT dmactl=0x%08x hwcfg2=0x%08x\n", tag, dct, hcfg);
     return FALSE;
 }
 
@@ -1489,14 +1488,14 @@ sec2_load_image_via_ports(UINT64 ucodePhys)
      * грузит код secure-передачей; v2.19: сигнатура (DMEM non-secure) прошла,
      * но код в non-secure IMEM — BROM читает SECURE IMEM (пуст) → dbg=0x0. */
     imemSec = (1 << 28);            /* IMEMC_SECURE */
-    Print(L"booter: загрузка IMEM через порты (SECURE, %d слов)...\n",
+    Print(L"booter: loading IMEM through ports (SECURE, %d words)...\n",
           BOOTER_APP_CODE_SIZE / 4);
     mmio_write32(SEC2_IMEMC0, imemSec | (1 << 24));  /* SECURE | AINCW */
     for (i = 0; i < BOOTER_APP_CODE_SIZE / 4; i++)
         mmio_write32(SEC2_IMEMD0, *(UINT32*)(img + BOOTER_APP_CODE_OFFSET + i * 4));
 
     /* DMEM: данные image[0x8A00..] → DMEM 0..0x6200 (dmemPa=0), SEC=0 как в DMA */
-    Print(L"booter: загрузка DMEM через порты (%d слов)...\n",
+    Print(L"booter: loading DMEM through ports (%d words)...\n",
           BOOTER_OS_DATA_SIZE / 4);
     mmio_write32(SEC2_DMEMC0, (1 << 24));  /* AINCW */
     for (i = 0; i < BOOTER_OS_DATA_SIZE / 4; i++)
@@ -1504,13 +1503,13 @@ sec2_load_image_via_ports(UINT64 ucodePhys)
 
     /* верификация: IMEM читаем с SECURE, DMEM без */
     mmio_write32(SEC2_IMEMC0, imemSec);   /* SECURE, addr 0 */
-    Print(L"booter: IMEM[0x00]=%08x (ожидаю %08x)\n",
+    Print(L"booter: IMEM[0x00]=%08x (expected %08x)\n",
           mmio_read32(SEC2_IMEMD0), *(UINT32*)(img + BOOTER_APP_CODE_OFFSET));
     mmio_write32(SEC2_IMEMC0, imemSec | 0x100);
-    Print(L"booter: IMEM[0x100]=%08x (ожидаю %08x)\n",
+    Print(L"booter: IMEM[0x100]=%08x (expected %08x)\n",
           mmio_read32(SEC2_IMEMD0), *(UINT32*)(img + BOOTER_APP_CODE_OFFSET + 0x100));
     mmio_write32(SEC2_DMEMC0, 0x10);
-    Print(L"booter: DMEM[0x10]=%08x (ожидаю sig %08x)\n",
+    Print(L"booter: DMEM[0x10]=%08x (expected signature %08x)\n",
           mmio_read32(SEC2_DMEMD0), *(UINT32*)(img + BOOTER_OS_DATA_OFFSET + 0x10));
 }
 
@@ -1526,7 +1525,7 @@ gsp_engine_reset(void)
 {
     UINTN i;
 
-    Print(L"gsp: ENGINE reset (0x1103C0) — убиваю GFW из POST...\n");
+    Print(L"gsp: ENGINE reset (0x1103C0) - stopping GFW from POST...\n");
     mmio_write32(GSP_ENGINE, NV_PFALCON_FALCON_ENGINE_RESET_TRUE);
     for (i = 0; i < 16; i++) mmio_read32(GSP_ENGINE);
     mmio_write32(GSP_ENGINE, 0);
@@ -1553,7 +1552,7 @@ gsp_dma_wait_not_full(void)
     for (i = 0; i < 20000; i++) {
         if (!(mmio_read32(GSP_DMATRFCMD) & 0x1)) return;
     }
-    Print(L"fwsec: ВНИМАНИЕ DMA queue FULL (cmd=0x%08x)\n", mmio_read32(GSP_DMATRFCMD));
+    Print(L"fwsec: WARNING DMA queue FULL (cmd=0x%08x)\n", mmio_read32(GSP_DMATRFCMD));
 }
 
 static void
@@ -1563,7 +1562,7 @@ gsp_dma_wait_idle(void)
     for (i = 0; i < 20000; i++) {
         if (mmio_read32(GSP_DMATRFCMD) & 0x2) return;
     }
-    Print(L"fwsec: ВНИМАНИЕ DMA не IDLE (cmd=0x%08x)\n", mmio_read32(GSP_DMATRFCMD));
+    Print(L"fwsec: WARNING DMA is not IDLE (cmd=0x%08x)\n", mmio_read32(GSP_DMATRFCMD));
 }
 
 static void
@@ -1594,7 +1593,7 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
     UINT32 data;
     UINT8 *dmem = (UINT8*)(UINTN)(fwsecPhys + FWSEC_DATA_OFF);
 
-    Print(L"\n--- v2.28: FWSEC HS-boot на GSP (0x110000) ---\n");
+    Print(L"\n--- v2.28: FWSEC HS-boot on GSP (0x110000) ---\n");
 
     /* 1. kflcnReset(GSP): ENGINE reset → BCR=FALCON → RM=PMC_BOOT_0 */
     Print(L"fwsec: kflcnReset(GSP)...\n");
@@ -1608,15 +1607,15 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
     mmio_write32(GSP_BCR, 0x1);                 /* CORE_SELECT=FALCON */
     for (i = 0; i < 16; i++) mmio_read32(GSP_BCR);
     mmio_write32(GSP_RM, mmio_read32(0x00100000));  /* chipId0 = PMC_BOOT_0 */
-    Print(L"fwsec: GSP после reset: cpuctl=0x%x bcr=0x%x engine=0x%x\n",
+    Print(L"fwsec: GSP after reset: cpuctl=0x%x bcr=0x%x engine=0x%x\n",
           mmio_read32(GSP_CPUCTL), mmio_read32(GSP_BCR), mmio_read32(GSP_ENGINE));
     if ((mmio_read32(GSP_CPUCTL) & 0xBADF0000) == 0xBADF0000) {
-        Print(L"fwsec: GSP залочен (0xBADF) — прерываю\n");
+        Print(L"fwsec: GSP locked (0xBADF) - aborting\n");
         return FALSE;
     }
 
     /* 2. Патчинг DMEM: сигнатура @0x5A4 + интерфейс FRTS (init_cmd + cmd) */
-    Print(L"fwsec: патчинг DMEM (sig@0x5a4, iface@0x1c, FRTS cmd)...\n");
+    Print(L"fwsec: patching DMEM (sig@0x5a4, iface@0x1c, FRTS command)...\n");
     CopyMem(dmem + FWSEC_SIG_DMEM_ADDR, fwsec_ga102_sig, FWSEC_SIG_SIZE);
     {
         /* DMEM_MAPPER_V3: signature@0, version(u16)@4, size(u16)@6,
@@ -1633,7 +1632,7 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
         c[9] = 0x100;                               /* 1MB в 4K-блоках */
         c[10] = 2;                                  /* frtsRegionMediaType=FB */
         mapper[11] = FWSEC_CMD_FRTS;                /* init_cmd @0x58C */
-        Print(L"fwsec: mapper init_cmd=0x%x cmd_in_off=0x%x (размер буфера 0x%x)\n",
+        Print(L"fwsec: mapper init_cmd=0x%x cmd_in_off=0x%x (buffer size 0x%x)\n",
               mapper[11], cmdInOff, mapper[3]);
     }
 
@@ -1652,31 +1651,31 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
 
     /* диагностика DMATRF (как v2.21 для SEC2): write+readback */
     mmio_write32(GSP_DMATRFBASE, 0xDEADBEEF);
-    Print(L"fwsec: DMATRFBASE write-test = 0x%08x (DEADBEEF = доступен)\n",
+    Print(L"fwsec: DMATRFBASE write-test = 0x%08x (DEADBEEF = writable)\n",
           mmio_read32(GSP_DMATRFBASE));
     mmio_write32(GSP_DMATRFBASE, 0);
 
     /* 4. DMA: IMEM SEC=1 (0xE200), DMEM SEC=0 (0x800) — как драйвер */
-    Print(L"fwsec: DMA IMEM (SEC=1, 0x%x байт)...\n", FWSEC_CODE_SIZE);
+    Print(L"fwsec: DMA IMEM (SEC=1, 0x%x bytes)...\n", FWSEC_CODE_SIZE);
     gsp_dma_transfer(0, 0, fwsecPhys, FWSEC_CODE_SIZE,
                      0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-    Print(L"fwsec: DMA DMEM (SEC=0, 0x%x байт)...\n", FWSEC_DMEM_SIZE);
+    Print(L"fwsec: DMA DMEM (SEC=0, 0x%x bytes)...\n", FWSEC_DMEM_SIZE);
     gsp_dma_transfer(0, 0, fwsecPhys + FWSEC_DATA_OFF, FWSEC_DMEM_SIZE,
                      0 | (6 << 8) | (0 << 12));
 
     /* 4b. Верификация: куда лёг код/данные (порты GSP IMEMC/DMEMC) */
     mmio_write32(GSP_BASE + 0x180, 0);          /* IMEMC0: addr 0, non-secure */
-    Print(L"fwsec: GSP IMEM[0x00]=0x%08x (образ: 0x%08x)\n",
+    Print(L"fwsec: GSP IMEM[0x00]=0x%08x (image: 0x%08x)\n",
           mmio_read32(GSP_BASE + 0x184), *(UINT32*)(UINTN)fwsecPhys);
     mmio_write32(GSP_BASE + 0x180, (1 << 28));  /* IMEMC0: addr 0, SECURE bit */
     Print(L"fwsec: GSP IMEM_S[0x00]=0x%08x (secure view)\n", mmio_read32(GSP_BASE + 0x184));
     mmio_write32(GSP_BASE + 0x180, 0x100 | (1 << 28));
     Print(L"fwsec: GSP IMEM_S[0x100]=0x%08x\n", mmio_read32(GSP_BASE + 0x184));
     mmio_write32(GSP_BASE + 0x1C0, FWSEC_SIG_DMEM_ADDR);   /* DMEMC0 */
-    Print(L"fwsec: GSP DMEM[0x5a4]=0x%08x (ожидаю 0x%08x — sig[2])\n",
+    Print(L"fwsec: GSP DMEM[0x5a4]=0x%08x (expected 0x%08x - sig[2])\n",
           mmio_read32(GSP_BASE + 0x1C4), *(UINT32*)(UINTN)fwsec_ga102_sig);
     mmio_write32(GSP_BASE + 0x1C0, 0x7C0);      /* cmd_in буфер */
-    Print(L"fwsec: GSP DMEM[0x7c0]=0x%08x (ожидаю 0x00000001 — FRTS readVbiosDesc.ver)\n",
+    Print(L"fwsec: GSP DMEM[0x7c0]=0x%08x (expected 0x00000001 - FRTS readVbiosDesc.ver)\n",
           mmio_read32(GSP_BASE + 0x1C4));
 
     /* v2.40: диагностика порта GSP УБРАНА (v2.37: SEC=0 DMA на IMEM[0x8000]
@@ -1694,7 +1693,7 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
             0x40000, 0x60000, 0x80000
         };
         UINTN s;
-        Print(L"fwsec: GSP IMEM-скан (v2.42):\n");
+        Print(L"fwsec: GSP IMEM scan (v2.42):\n");
         for (s = 0; s < sizeof(scan_offs)/sizeof(scan_offs[0]); s++) {
             UINT32 a = scan_offs[s];
             UINT32 vn, vs;
@@ -1720,14 +1719,14 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
     mmio_write32(GSP_BOOTVEC, 0);
     __asm__ volatile("wbinvd" ::: "memory");
     mmio_write32(GSP_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
-    Print(L"fwsec: STARTCPU (GSP), жду WPR2 до 5с...\n");
+    Print(L"fwsec: STARTCPU (GSP), waiting up to 5s for WPR2...\n");
 
     /* 7. Поллинг WPR2 (FRTS ставит lo=0x27fe000 hi=0x27fee00) */
     for (i = 0; i < 5000; i++) {
         UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO);
         UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI);
         if ((lo & 0xFFFFFFF0) == 0x027FE000 && (hi & 0xFFFFFFF0) == 0x027FEE00) {
-            Print(L"fwsec: *** WPR2 УСТАНОВЛЕН lo=0x%08x hi=0x%08x после %d ms ***\n",
+                Print(L"fwsec: *** WPR2 SET lo=0x%08x hi=0x%08x after %d ms ***\n",
                   lo, hi, i);
 
             /* v2.43: ПЕРЕБОР команд FWSEC (0x10..0x1F) — ищем команду записи
@@ -1736,7 +1735,7 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
             {
                 UINT8 *dmem2 = (UINT8*)(UINTN)(fwsecPhys + FWSEC_DATA_OFF);
                 UINT32 cmd;
-                Print(L"fwsec: v2.43 перебор команд 0x10..0x1F:\n");
+                Print(L"fwsec: v2.43 command sweep 0x10..0x1F:\n");
                 for (cmd = 0x10; cmd <= 0x1F; cmd++) {
                     UINT32 *mapper2 = (UINT32*)(dmem2 + 0x560);
                     UINT32 cmdInOff2 = mapper2[2];
@@ -1768,9 +1767,9 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
                           mmio_read32(GSP_CPUCTL),
                           mmio_read32(GSP_BASE + 0x94),
                           (plmA != plm0 || privA != priv0 || wprA != wpr0)
-                              ? L" <<< ИЗМЕНЕНИЕ" : L"");
+                              ? L" <<< CHANGED" : L"");
                     if (plmA == VAL_PLM_OPEN) {
-                        Print(L"fwsec:   *** cmd=0x%02x ОТКРЫЛ PLM! ***\n", cmd);
+                        Print(L"fwsec:   *** cmd=0x%02x OPENED PLM! ***\n", cmd);
                         break;
                     }
                 }
@@ -1800,7 +1799,7 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
                 c2[10] = 2;
                 mapper2[11] = 0x15;
 
-                Print(L"fwsec: v2.45 модиф. FWSEC (frts=0x10000000)...\n");
+                Print(L"fwsec: v2.45 modified FWSEC (frts=0x10000000)...\n");
                 gsp_dma_transfer(0, 0, fwsecPhys, FWSEC_CODE_SIZE,
                                  0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
                 gsp_dma_transfer(0, 0, fwsecPhys + FWSEC_DATA_OFF,
@@ -1814,13 +1813,13 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
                 __asm__ volatile("wbinvd" ::: "memory");
                 mmio_write32(GSP_CPUCTL,
                              NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
-                Print(L"fwsec:   жду WPR2 (модиф. код → lo=0x100000):\n");
+                Print(L"fwsec:   waiting for WPR2 (modified code -> lo=0x100000):\n");
                 for (p = 0; p < 2000; p++) {
                     UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO);
                     UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI);
                     if ((lo & 0xFFFFFFF0) == 0x00100000) {
-                        Print(L"fwsec:   *** WPR2=0x%08x%08x — НАШ модиф. код "
-                              L"выполнился (SEC=1 на GSP РАБОТАЕТ!) ***\n",
+                        Print(L"fwsec:   *** WPR2=0x%08x%08x - OUR modified code "
+                              L"executed (GSP SEC=1 WORKS!) ***\n",
                               hi, lo);
                         break;
                     }
@@ -1831,9 +1830,9 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
                               mmio_read32(GSP_BASE + 0x94));
                     uefi_call_wrapper(BS->Stall, 1, 1000);
                 }
-                Print(L"fwsec:   итог: wpr2lo=0x%08x hi=0x%08x "
-                      L"(0x027FE000 = предзагруженный код, SEC=1 не работает; "
-                      L"0x100000 = НАШ код!)\n",
+                Print(L"fwsec:   result: wpr2lo=0x%08x hi=0x%08x "
+                      L"(0x027FE000 = preloaded code, SEC=1 does not work; "
+                      L"0x100000 = OUR code!)\n",
                       mmio_read32(REG_PFB_MMU_WPR2_LO),
                       mmio_read32(REG_PFB_MMU_WPR2_HI));
             }
@@ -1845,7 +1844,7 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
                   mmio_read32(GSP_BASE + 0x94), mmio_read32(0x001438));
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"fwsec: WPR2 НЕ установлен: lo=0x%08x hi=0x%08x gspcpuctl=0x%x dbg=0x%x scratch0e=0x%x\n",
+    Print(L"fwsec: WPR2 NOT SET: lo=0x%08x hi=0x%08x gspcpuctl=0x%x dbg=0x%x scratch0e=0x%x\n",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI),
           mmio_read32(GSP_CPUCTL), mmio_read32(GSP_BASE + 0x94),
           mmio_read32(0x001438));
@@ -1897,7 +1896,7 @@ fwsec_boot_gsp_40hx(UINT64 fwsecPhys)
           mmio_read32(GSP_CPUCTL), mmio_read32(GSP_BCR),
           mmio_read32(GSP_HWCFG2));
     if ((mmio_read32(GSP_CPUCTL) & 0xBADF0000u) == 0xBADF0000u) {
-        Print(L"fwsec40: GSP locked (0xBADF) — abort\n");
+        Print(L"fwsec40: GSP locked (0xBADF) - abort\n");
         return FALSE;
     }
 
@@ -1915,7 +1914,7 @@ fwsec_boot_gsp_40hx(UINT64 fwsecPhys)
     /* 若实测 mapper 布局偏移与常量不符（mapper[2]=cmd_in_off 非 0x3b0），
      * 则按 mapper 自述的 cmd_in_buffer_offset 重定位（驱动式） */
     if (mapper[2] < FW40_DMEM_SIZE && mapper[2] != FW40_CMDIN_OFF) {
-        Print(L"fwsec40: mapper.cmd_in_off=0x%x (!=0x3b0) — 用 mapper 值\n",
+        Print(L"fwsec40: mapper.cmd_in_off=0x%x (!=0x3b0) - using mapper value\n",
               mapper[2]);
     }
     /* readVbiosDesc (24B): ver=1 size=24 gfwOff=0 gfwSize=0 flags=2 */
@@ -2033,7 +2032,7 @@ fwsec_boot_gsp_40hx(UINT64 fwsecPhys)
     mmio_write32(GSP_BOOTVEC, GSP_BL_TU102_START_TAG << 8);
     __asm__ volatile("wbinvd" ::: "memory");
     mmio_write32(GSP_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
-    Print(L"fwsec40: STARTCPU (BL@0xfd00 → DMA FWSEC), poll WPR2 up 5s...\n");
+    Print(L"fwsec40: STARTCPU (BL@0xfd00 -> DMA FWSEC), poll WPR2 up 5s...\n");
 
     /* 7. poll WPR2 → FRTS 成功则 up；读 GSP cpu/dbg/scratch 判失败原因 */
     for (i = 0; i < 5000; i++) {
@@ -2083,32 +2082,32 @@ fwsec_boot_gsp_40hx(UINT64 fwsecPhys)
  * Ботер/LibosBootArgs читают mailbox0 как 32-битный адрес; meta на >4ГБ
  * даёт мусор (exit 0x91). Копия СВЕЖАЯ при каждом вызове (контент мог
  * обновиться между стадиями). */
-static UINT64 cmp90_metaLowPhys = 0;
+static UINT64 cmp40_metaLowPhys = 0;
 static UINT64
-cmp90_meta_low(UINT64 wprMetaPhys)
+cmp40_meta_low(UINT64 wprMetaPhys)
 {
-    if (cmp90_metaLowPhys == 0) {
-        if (EFI_ERROR(alloc_below_4g(1, &cmp90_metaLowPhys))) {
-            Print(L"meta-low: alloc FAIL — использую оригинал\n");
+    if (cmp40_metaLowPhys == 0) {
+        if (EFI_ERROR(alloc_below_4g(1, &cmp40_metaLowPhys))) {
+            Print(L"meta-low: allocation failed - using original\n");
             return wprMetaPhys;
         }
     }
-    CopyMem((VOID*)(UINTN)cmp90_metaLowPhys,
+    CopyMem((VOID*)(UINTN)cmp40_metaLowPhys,
             (VOID*)(UINTN)wprMetaPhys, WPR_META_SIZE);
     __asm__ volatile("wbinvd" ::: "memory");
     {
         /* v2.64: верификация контента — magic + heap + sig + flags */
-        UINT64 *m = (UINT64*)(UINTN)cmp90_metaLowPhys;
+        UINT64 *m = (UINT64*)(UINTN)cmp40_metaLowPhys;
         /* поля: [9]=sigAddr [10]=sigSize [15]=heapOff [16]=heapSize
          * [17]=gspFwOffset [19]=frtsOff [20]=frtsSize; flags @байт 0xB4 */
         Print(L"meta-low @0x%lx: magic ok=%d sig@0x%llx sz=0x%llx "
               L"heapOff=0x%llx heapSz=0x%llx fwOff=0x%llx flags=0x%x\n",
-              cmp90_metaLowPhys,
+              cmp40_metaLowPhys,
               (m[0] == 0xDC3AAE21371A60B3ULL),
               m[9], m[10], m[15], m[16], m[17],
-              *(UINT32*)((UINT8*)cmp90_metaLowPhys + 0xB4));
+              *(UINT32*)((UINT8*)cmp40_metaLowPhys + 0xB4));
     }
-    return cmp90_metaLowPhys;
+    return cmp40_metaLowPhys;
 }
 
 /* ==================== v2.69: поллинг mbox0 ВО ВРЕМЯ исполнения ботера =====
@@ -2123,10 +2122,10 @@ typedef struct {
     /* v2.72: расширенный срез состояния во время исполнения ботера */
     UINT32 wpr2lo, dmatrfcmd, gspmbox0;
     UINT32 dFF4c, dFF50, d10;       /* DMEM: canary 0xff4c/0xff50 (sec) + [0x10] ns */
-} CMP90_MBOX_ENT;
-#define CMP90_MBOX_HIST_MAX 4096
+} CMP40_MBOX_ENT;
+#define CMP40_MBOX_HIST_MAX 4096
 
-static UINT64 cmp90_ptimer64(void)
+static UINT64 cmp40_ptimer64(void)
 {
     /* чтение TIME_1 защёлкивает TIME_0 — порядок как в драйвере NV */
     UINT32 hi = mmio_read32(NV_PTIMER_TIME_1);
@@ -2169,7 +2168,7 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
 
     /* v64: НЕ копируем meta ниже 4ГБ (v2.63 GA102-предположение). TU102
      * booter адресует mailbox0/1 = LO32/HI32 (64-бит, kernel_gsp_booter_tu102.c);
-     * cmp90_meta_low() в прологе HANG'ал (EFI alloc/CopyMem/wbinvd) — то же,
+     * cmp40_meta_low() in the prologue used to hang (EFI alloc/CopyMem/wbinvd) - the same
      * что v59. Meta остаётся на >4ГБ, mailbox пишется ниже 64-битно. */
     wprMetaPhys = wprMetaPhys;
 
@@ -2184,7 +2183,7 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
         data = mmio_read32(0x84001C);   /* SEC2 HWCFG2 */
         if (data & 0x80000000) break;
         if (i == 99999)
-            Print(L"booter: ВНИМАНИЕ RESET_READY не пришёл (HWCFG2=0x%08x)\n", data);
+            Print(L"booter: WARNING RESET_READY did not arrive (HWCFG2=0x%08x)\n", data);
     }
     Print(L"booter: SEC2 HWCFG2=0x%08x (RESET_READY=bit31)\n", data);
 
@@ -2204,16 +2203,16 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
     uefi_call_wrapper(BS->Stall, 1, 10000);
 
     data = mmio_read32(SEC2_CPUCTL);
-    Print(L"booter: CPUCTL после BCR=0 = 0x%08x (0xBADF = lockdown не снят)\n", data);
+    Print(L"booter: CPUCTL after BCR=0 = 0x%08x (0xBADF = lockdown still active)\n", data);
     if ((data & 0xBADF0000) == 0xBADF0000) {
         /* запасной вариант: BCR=0x1 (как в v2.12 — тоже снимал lockdown) */
-        Print(L"booter: пробую BCR=0x1...\n");
+        Print(L"booter: trying BCR=0x1...\n");
         mmio_write32(SEC2_BCR_CTRL, 0x1);
         uefi_call_wrapper(BS->Stall, 1, 10000);
         data = mmio_read32(SEC2_CPUCTL);
-        Print(L"booter: CPUCTL после BCR=1 = 0x%08x\n", data);
+        Print(L"booter: CPUCTL after BCR=1 = 0x%08x\n", data);
         if ((data & 0xBADF0000) == 0xBADF0000) {
-            Print(L"booter: SEC2 lockdown НЕ снят — прерываю booter load\n");
+            Print(L"booter: SEC2 lockdown still active - aborting booter load\n");
             return EFI_DEVICE_ERROR;
         }
     }
@@ -2232,12 +2231,12 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
      * booter load драйвер имеет WPR2=0x27FE00000 (сырые: lo=0x027fe000,
      * hi=0x027fee00 — из FRTS_DIAG живой системы). У нас после POST
      * WPR2=0x1FFFFE00 — booter может валидировать WPR2 и выходить. */
-    Print(L"booter: WPR2 до записи: lo=0x%08x hi=0x%08x\n",
+    Print(L"booter: WPR2 before write: lo=0x%08x hi=0x%08x\n",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI));
     mmio_write32(REG_PFB_MMU_WPR2_LO, 0x027fe000);
     mmio_write32(REG_PFB_MMU_WPR2_HI, 0x027fee00);
     uefi_call_wrapper(BS->Stall, 1, 10000);
-    Print(L"booter: WPR2 после записи: lo=0x%08x hi=0x%08x (не изменились = заблокировано)\n",
+    Print(L"booter: WPR2 after write: lo=0x%08x hi=0x%08x (unchanged means locked)\n",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI));
 
     /* kflcnDisableCtxReq: FBIF_CTL ALLOW_PHYS_NO_CTX + DMACTL=0 */
@@ -2246,13 +2245,13 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
     mmio_write32(SEC2_FBIF_CTL, data);
     data = mmio_read32(SEC2_FBIF_CTL);
     if ((data & 0xBADF0000) == 0xBADF0000)
-        Print(L"booter: ВНИМАНИЕ FBIF_CTL всё ещё залочен (0x%08x)\n", data);
+        Print(L"booter: WARNING FBIF_CTL is still locked (0x%08x)\n", data);
     mmio_write32(SEC2_DMACTL, 0);
 
     /* v2.41: RM = chipId0 — из ТРЕЙСА драйвера: 0xb72000a1 (НЕ PMC_BOOT_0!).
      * kflcnReset_TU102: kflcnRegWrite(RM, pGpu->chipId0). */
     mmio_write32(SEC2_RM, 0xb72000a1);
-    Print(L"booter: RM записан = 0xb72000a1 (chipId0 из трейса драйвера)\n");
+    Print(L"booter: RM set to 0xb72000a1 (chipId0 from driver trace)\n");
 
     /* TRANSCFG(0): TARGET=COHERENT_SYSMEM(1) | MEM_TYPE=PHYSICAL(1<<2)
      * (нужен и для внутреннего DMA booter'а при чтении WPR meta) */
@@ -2264,25 +2263,25 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
      * передал» (IMEM=DEAD5EC1 через НЕ-secure порт) — но SEC=1 передача
      * могла писать в SECURE IMEM (невидимый не-secure чтению), а блобы тогда
      * были мусором (до --redefine-sym). Теперь блобы настоящие. */
-    Print(L"booter: DMATRFBASE до = 0x%08x\n", mmio_read32(SEC2_DMATRFBASE));
+    Print(L"booter: DMATRFBASE before = 0x%08x\n", mmio_read32(SEC2_DMATRFBASE));
     mmio_write32(SEC2_DMATRFBASE, 0xDEADBEEF);
-    Print(L"booter: DMATRFBASE после = 0x%08x (DEADBEEF = пишется; 0xBADF = залочен)\n",
+    Print(L"booter: DMATRFBASE after = 0x%08x (DEADBEEF = writable; 0xBADF = locked)\n",
           mmio_read32(SEC2_DMATRFBASE));
 
     /* v2.71b comment retained; v55: TU102 (nv616) geometry replaces the GA102
      * numbers here — see BOOTER_* defines above. IMEM = image[0x100..0x8500)
      * (0x8400 B, SEC=1), DMEM = image[0x8500..0xE700) (0x6200 B, SEC=0);
      * signature patch site image[0x8700] lands on DMEM[0x200]=hsSigDmemAddr. */
-    Print(L"booter: DMA IMEM SEC=1 (dest=0, src+0x100, 0x8400 байт)...\n");
+    Print(L"booter: DMA IMEM SEC=1 (dest=0, src+0x100, 0x8400 bytes)...\n");
     falcon_dma_transfer(0, BOOTER_APP_CODE_OFFSET, ucodePhys,
                         BOOTER_APP_CODE_SIZE,
                         0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-    Print(L"booter: DMA DMEM SEC=0 (dest=0, src+0x8500, 0x6200 байт)...\n");
+    Print(L"booter: DMA DMEM SEC=0 (dest=0, src+0x8500, 0x6200 bytes)...\n");
     falcon_dma_transfer(0, 0, ucodePhys + BOOTER_OS_DATA_OFFSET,
                         BOOTER_OS_DATA_SIZE,
                         0 | (6 << 8) | (0 << 12));
     mmio_write32(SEC2_DMEMC0, BOOTER_HS_SIG_DMEM_ADDR);
-    Print(L"booter: DMEM[0x%x]=0x%08x (ожидаю sig @image+0x%x = 0x%08x)\n",
+    Print(L"booter: DMEM[0x%x]=0x%08x (expected signature @image+0x%x = 0x%08x)\n",
           BOOTER_HS_SIG_DMEM_ADDR, mmio_read32(SEC2_DMEMD0),
           BOOTER_SIG_PATCH_LOC,
           *(UINT32*)((UINTN)ucodePhys + BOOTER_SIG_PATCH_LOC));
@@ -2321,9 +2320,9 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
      * DMEM[0x10] ns) — каждую 32-ю итерацию. Запись в историю: любое
      * изменение ИЛИ каждые 256 итераций (временные ряды). */
     {
-        CMP90_MBOX_ENT *hist = NULL;
+        CMP40_MBOX_ENT *hist = NULL;
         UINTN hist_n = 0;
-        UINT64 t0 = cmp90_ptimer64();
+        UINT64 t0 = cmp40_ptimer64();
         UINT32 pm0 = mmio_read32(SEC2_MAILBOX0);
         UINT32 pir = mmio_read32(SEC2_IRQSTAT);
         UINT32 pcu = mmio_read32(SEC2_CPUCTL);
@@ -2337,15 +2336,15 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
         UINTN j, it = 0, lastRec = 0;
 
         uefi_call_wrapper(BS->AllocatePool, 3, EfiBootServicesData,
-                          CMP90_MBOX_HIST_MAX * sizeof(CMP90_MBOX_ENT),
+                          CMP40_MBOX_HIST_MAX * sizeof(CMP40_MBOX_ENT),
                           (VOID **)&hist);
 
-#define CMP90_DREAD(addr, sec) ({ \
+#define CMP40_DREAD(addr, sec) ({ \
     mmio_write32(SEC2_DMEMC0, (addr) | ((sec) ? (1u << 28) : 0)); \
     mmio_read32(SEC2_DMEMD0); })
-        pd4n = CMP90_DREAD(0xFF4C, 0); pd4s = CMP90_DREAD(0xFF4C, 1);
-        pd5n = CMP90_DREAD(0xFF50, 0); pd5s = CMP90_DREAD(0xFF50, 1);
-        pd10 = CMP90_DREAD(0x10, 0);
+        pd4n = CMP40_DREAD(0xFF4C, 0); pd4s = CMP40_DREAD(0xFF4C, 1);
+        pd5n = CMP40_DREAD(0xFF50, 0); pd5s = CMP40_DREAD(0xFF50, 1);
+        pd10 = CMP40_DREAD(0x10, 0);
 
         Print(L"booter: baseline m0=0x%08x irq=0x%x cpu=0x%x dbg=0x%x "
               L"w2=0x%08x dma=0x%08x gsp=0x%08x d[ff4c]=%08x/%08x "
@@ -2362,9 +2361,9 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
             for (it = 0; it < 200000; it++) {
                 UINT32 wt = mmio_read32(NV_FALCON2_SEC_BASE + 0x408);
                 if (wt != lastWt) {
-                    if (hist && hist_n < CMP90_MBOX_HIST_MAX &&
+                    if (hist && hist_n < CMP40_MBOX_HIST_MAX &&
                         (it - lastRec) >= 24) {
-                        UINT64 t = cmp90_ptimer64();
+                        UINT64 t = cmp40_ptimer64();
                         hist[hist_n].t_lo = (UINT32)t;
                         hist[hist_n].t_hi = (UINT32)(t >> 32);
                         hist[hist_n].cpuctl = mmio_read32(SEC2_CPUCTL);
@@ -2403,8 +2402,8 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
             if (ir & 0x10) { pir = ir; halted = TRUE; break; }
             m0 = mmio_read32(SEC2_MAILBOX0);
             if (m0 != pm0) {
-                if (hist && hist_n < CMP90_MBOX_HIST_MAX) {
-                    UINT64 t = cmp90_ptimer64();
+                if (hist && hist_n < CMP40_MBOX_HIST_MAX) {
+                    UINT64 t = cmp40_ptimer64();
                     hist[hist_n].t_lo = (UINT32)t;
                     hist[hist_n].t_hi = (UINT32)(t >> 32);
                     hist[hist_n].mbox0 = m0;
@@ -2425,27 +2424,27 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
             if (mmio_read32(REG_FEAT_OVR_PLM) == VAL_PLM_OPEN) {
                 plmOpen = TRUE; break;
             }
-            elapsed = cmp90_ptimer64() - t0;
+            elapsed = cmp40_ptimer64() - t0;
             if (elapsed > 5000000000ULL) break;
             uefi_call_wrapper(BS->Stall, 1, 1000);
         }
-#undef CMP90_DREAD
+#undef CMP40_DREAD
 
-        elapsed = cmp90_ptimer64() - t0;
-        Print(L"booter: hist %u записей за %u.%03u мс, iters=%u (%s)\n",
+        elapsed = cmp40_ptimer64() - t0;
+        Print(L"booter: hist %u entries over %u.%03u ms, iters=%u (%s)\n",
               (UINT32)hist_n,
               (UINT32)(elapsed / 1000000ULL),
               (UINT32)((elapsed / 1000ULL) % 1000ULL),
               (UINT32)it,
-              plmOpen ? L"PLM OPEN" : halted ? L"HALT" : L"таймаут 5с");
+              plmOpen ? L"PLM OPEN" : halted ? L"HALT" : L"timeout 5s");
         for (j = 0; j < hist_n; j++) {
             UINT64 tj = ((UINT64)hist[j].t_hi << 32) | hist[j].t_lo;
             UINT64 d = tj - t0;
             if (hist_n > 240 && j == 120) {
-                Print(L"  ... пропущено %u записей ...\n", (UINT32)(hist_n - 240));
+                Print(L"  ... skipped %u entries ...\n", (UINT32)(hist_n - 240));
                 j = hist_n - 121;   /* после j++ продолжим с n-120 */
             }
-            Print(L"  hist[%03u] +%u.%03uмс cpu=0x%08x irq=0x%08x dbg=0x%08x "
+            Print(L"  hist[%03u] +%u.%03ums cpu=0x%08x irq=0x%08x dbg=0x%08x "
                   L"m0=0x%08x w2=0x%08x dma=0x%08x gsp=0x%08x "
                   L"d[ff4c]=%08x d[ff50]=%08x d[10]=%08x\n",
                   (UINT32)j,
@@ -2455,7 +2454,7 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
                   hist[j].gspmbox0, hist[j].dFF4c, hist[j].dFF50,
                   hist[j].d10);
         }
-        Print(L"booter: финал: cpu=0x%x irq=0x%x dbg=0x%x m0=0x%08x m1=0x%08x\n",
+        Print(L"booter: final: cpu=0x%x irq=0x%x dbg=0x%x m0=0x%08x m1=0x%08x\n",
               mmio_read32(SEC2_CPUCTL), mmio_read32(SEC2_IRQSTAT),
               mmio_read32(SEC2_DEBUGINFO),
               mmio_read32(SEC2_MAILBOX0), mmio_read32(SEC2_MAILBOX1));
@@ -2511,7 +2510,7 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
               mmio_read32(NV_FALCON2_SEC_BASE + 0x668));
         rdidx = mmio_read32(NV_FALCON2_SEC_BASE + 0x404) & 0xFF;
         wtidx = mmio_read32(NV_FALCON2_SEC_BASE + 0x408) & 0xFF;
-        Print(L"booter: trace rdidx=%d wtidx=%d (0xBADF = riscv блок залочен)\n",
+        Print(L"booter: trace rdidx=%d wtidx=%d (0xBADF = RISC-V block locked)\n",
               rdidx, wtidx);
         for (t = 0; t < 16; t++) {
             UINT32 idx = (wtidx + 0x100 - t) & 0xFF;
@@ -2541,7 +2540,8 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
  * v56: TU102 BOOT_DIRECT booter loader —— 完全按 OpenRM 610.43.03 驱动
  * （kernel_gsp_booter_tu102.c / kernel_gsp_falcon_tu102.c）复刻。
  *
- * 关键点（与 90HX/GA102 的 DMA 装载完全不同！）：
+ * Key point: this TU106 path is completely different from the legacy
+ * GA102 DMA loader:
  *  - Turing 的 SEC2/GSP falcon 是 **BOOT_DIRECT**（kgspExecuteHsFalcon_TU102
  *    断言 !bBootFromHs；s_allocateUcodeFromBinArchive 选 BOOT_DIRECT 分支），
  *    装载走 **IMEMC/IMEMD + IMEMT 块 tag 端口**（不是 DMATRF DMA）。
@@ -2589,7 +2589,7 @@ u40x_dmem_write(UINT32 dst, const UINT32 *src, UINT32 sizeBytes)
         mmio_write32(SEC2_DMEMD0, src[i]);
 }
 
-#define SEC2_RESET_PLM_REG      0x008403C4UL  /* SEC2 RESET_PRIV_LEVEL_MASK (cyridd CMP40_SEC2_RESET_PLM) */
+#define SEC2_RESET_PLM_REG      0x008403C4UL  /* SEC2 RESET_PRIV_LEVEL_MASK (cyridd/cmpunlocker CMP40_SEC2_RESET_PLM) */
 
 /* =====================================================================
  * v58（参考 cmpunlocker 0001 patch 后重写装载器入口）：
@@ -2628,9 +2628,9 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
     Print(L"tu102 pre:   wpr2hi=0x%08x\n", data);
     data = mmio_read32(REG_PFB_MMU_WPR2_LO);
     Print(L"tu102 pre:   wpr2lo=0x%08x\n", data);
-    /* v62: 尝试把 WPR2 拉 up（40HX 8GB 值，log53 真解 dmesg：
-     * POST_FWSEC_PRE_GSP_ENTRY WPR=01ffee00:01ffe000）。90HX 参考
-     * (unlock_v2.c v2.16) booter 前显式写 WPR2=frtsOffset；
+    /* v62: try to raise WPR2 (40HX 8GB value, log53 decoded dmesg:
+     * POST_FWSEC_PRE_GSP_ENTRY WPR=01ffee00:01ffe000). The legacy reference
+     * flow explicitly wrote WPR2=frtsOffset before the booter;
      * REFERENCE_FLOW §3.1 推论 1：booter 可能校验 WPR2 后退出(=0x91)。
      * host 直写可能被锁——写后读回验证并打印结果。 */
     Print(L"tu102 v62: set WPR2 up (lo=0x01ffe000 hi=0x01ffee00)...\n");
@@ -2642,7 +2642,7 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
           mmio_read32(REG_PFB_MMU_WPR2_HI), mmio_read32(REG_PFB_MMU_WPR2_LO));
     Print(L"tu102 v62: read SEC2_RESET_PLM(0x8403C4)...\n");
     data = mmio_read32(SEC2_RESET_PLM_REG);
-    Print(L"tu102 v62:   reset_plm=0x%08x (cyridd 期望 0xff)\n", data);
+    Print(L"tu102 v62:   reset_plm=0x%08x (cyridd/cmpunlocker expected 0xff)\n", data);
 
     for (attempt = 0; attempt < 2; attempt++) {
         BOOLEAN bReset = (attempt == 1);
@@ -2713,7 +2713,7 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
         /* v61: meta 直传 >4GB 原址（wprMetaPhys），**不做 low-copy**。
          * 驱动 kgspExecuteBooterLoad_TU102: mailbox0/1 = LO32/HI32(sysmemAddr)
          * = 64 位寻址，meta 由 RM memdesc 分配在 >4GB（实测 0x110BB0000）。
-         * v55 的 cmp90_meta_low(<4GB) 是 90HX/GA102 老假设；TU102 锁卡上
+         * v55's cmp40_meta_low(<4GB) was a legacy GA102 assumption; on the locked TU102
          * <4GB 读反而被锁（869 行 v2.63 注释：exit 0x91）。 */
         Print(L"tu102: mailbox=wprMetaPhys>4G (no low copy)...\n");
         metaLow = wprMetaPhys;
@@ -2749,7 +2749,7 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
               mmio_read32(REG_PFB_MMU_WPR2_HI), mmio_read32(REG_PFB_MMU_WPR2_LO));
 
         if (m0 == 0u) {
-            Print(L"tu102: *** mbox0=0 → booter OK (attempt %d) ***\n",
+            Print(L"tu102: *** mbox0=0 -> booter OK (attempt %d) ***\n",
                   (INTN)attempt + 1);
             return EFI_SUCCESS;
         }
@@ -2770,7 +2770,7 @@ early_unlock_path(UINT64 ucodePhys, UINT64 fwsecPhys, UINT64 wprMetaPhys)
 {
     UINTN i;
 
-    Print(L"\n=== v2.70: ранний путь — ботер ПЕРВЫЙ на свежем SEC2 ===\n");
+    Print(L"\n=== v2.70: early path - booter FIRST on fresh SEC2 ===\n");
 
     /* --- [E1] BL (ucodeId=1) на GSP — открывает secure-путь (урок v2.62b).
      *        Дословная копия стадии [1/3] v2.46 (эмпирически рабочая). --- */
@@ -2806,15 +2806,15 @@ early_unlock_path(UINT64 ucodePhys, UINT64 fwsecPhys, UINT64 wprMetaPhys)
     mmio_write32(GSP_CPUCTL, 2);          /* STARTCPU */
     mmio_write32(GSP_BCR, 0x111);         /* RISCV+BRFETCH после старта */
     uefi_call_wrapper(BS->Stall, 1, 1000000);
-    Print(L"[E1] после BL: cpuctl=0x%x dbg=0x%x mbox0=0x%x bcr=0x%x\n",
+    Print(L"[E1] after BL: cpuctl=0x%x dbg=0x%x mbox0=0x%x bcr=0x%x\n",
           mmio_read32(GSP_CPUCTL), mmio_read32(GSP_BASE + 0x94),
           mmio_read32(GSP_MAILBOX0), mmio_read32(GSP_BCR));
 
     /* --- [E2] FWSEC на GSP → WPR2 (fwsec_boot_gsp сам ресетит GSP) --- */
-    Print(L"[E2] FWSEC на GSP (WPR2)...\n");
+    Print(L"[E2] FWSEC on GSP (WPR2)...\n");
     CopyMem((VOID*)(UINTN)fwsecPhys, fwsec_ga102_bin, FWSEC_SIZE);
     if (!fwsec_boot_gsp(fwsecPhys)) {
-        Print(L"[E2] WPR2 не встал — ранний путь не удался\n");
+        Print(L"[E2] WPR2 was not set - early path failed\n");
         return EFI_DEVICE_ERROR;
     }
 
@@ -2833,7 +2833,7 @@ early_unlock_path(UINT64 ucodePhys, UINT64 fwsecPhys, UINT64 wprMetaPhys)
     for (i = 0; i < 100000; i++) {
         if (mmio_read32(GSP_HWCFG2) & 0x80000000) break;
         if (i == 99999)
-            Print(L"[E3] ВНИМАНИЕ: GSP RESET_READY не пришёл\n");
+            Print(L"[E3] WARNING: GSP RESET_READY did not arrive\n");
     }
     uefi_call_wrapper(BS->Stall, 1, 50000);
     mmio_write32(GSP_BCR, 0x111);
@@ -2841,8 +2841,8 @@ early_unlock_path(UINT64 ucodePhys, UINT64 fwsecPhys, UINT64 wprMetaPhys)
     Print(L"[E3] GSP BCR=0x%x hwcfg2=0x%08x cpu=0x%08x\n",
           mmio_read32(GSP_BCR), mmio_read32(GSP_HWCFG2),
           mmio_read32(GSP_CPUCTL));
-    mmio_write32(GSP_MAILBOX0, (UINT32)cmp90_meta_low(wprMetaPhys));
-    mmio_write32(GSP_MAILBOX1, (UINT32)(cmp90_meta_low(wprMetaPhys) >> 32));
+    mmio_write32(GSP_MAILBOX0, (UINT32)cmp40_meta_low(wprMetaPhys));
+    mmio_write32(GSP_MAILBOX1, (UINT32)(cmp40_meta_low(wprMetaPhys) >> 32));
 
     sec2_health(L"E4-pre-booter");
 
@@ -2887,14 +2887,14 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
     BOOLEAN ourCode = FALSE;
     BOOLEAN plmOpen = FALSE;
 
-    Print(L"\n=== v2.46: ПОЛНЫЙ РЕПЛЕЙ ПОСЛЕДОВАТЕЛЬНОСТИ ДРАЙВЕРА ===\n");
-    Print(L"исходное: PLM=0x%08x SS0=0x%08x SS1=0x%08x GFW=0x%08x WPR2lo=0x%08x\n",
+    Print(L"\n=== v2.46: FULL DRIVER SEQUENCE REPLAY ===\n");
+    Print(L"initial: PLM=0x%08x SS0=0x%08x SS1=0x%08x GFW=0x%08x WPR2lo=0x%08x\n",
           mmio_read32(REG_FEAT_OVR_PLM), mmio_read32(REG_FEAT_OVR_SM_SPD),
           mmio_read32(REG_FEAT_OVR_SM_SPD_1), mmio_read32(REG_GFW_BOOT_OK),
           mmio_read32(REG_PFB_MMU_WPR2_LO));
 
     /* ---------- Стадия 1: GSP booter load (ucodeId=1) ---------- */
-    Print(L"[1/3] GSP booter load ucodeId=1 (из трейса 538.881)\n");
+    Print(L"[1/3] GSP booter load ucodeId=1 (from trace 538.881)\n");
     mmio_write32(0x110080, 0x0);          /* из трейса (IRQMSET=0) */
     falcon_wait_reset_ready(GSP_HWCFG2);
     mmio_write32(GSP_ENGINE, 0x1);
@@ -2909,10 +2909,10 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
     mmio_write32(GSP_RM, 0xb72000a1);
     mmio_write32(GSP_DMACTL, 0x0);
 
-    Print(L"[1] DMA IMEM SEC=1 0x4000 б (src+0x100 — заголовок пропущен)...\n");
+    Print(L"[1] DMA IMEM SEC=1 0x4000 bytes (src+0x100 - header skipped)...\n");
     gsp_dma_transfer(0, 0x100, booterPhys, 0x4000,
                      0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-    Print(L"[1] DMA DMEM SEC=0 0x2400 б (src+0x4100)...\n");
+    Print(L"[1] DMA DMEM SEC=0 0x2400 bytes (src+0x4100)...\n");
     gsp_dma_transfer(0, 0, booterPhys + 0x4100, 0x2400,
                      0 | (6 << 8) | (0 << 12));
 
@@ -2920,7 +2920,7 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
      * DMEM грузится из src+0x4100 → DMEM[0x1F10] = src[0x4100+0x1F10=0x6010] */
     {
         UINT8 *img = (UINT8*)(UINTN)booterPhys;
-        Print(L"[1] патч src[0x6010] ← sig_dbg (0x180 б) для DMEM[0x1F10]...\n");
+        Print(L"[1] patch src[0x6010] <- sig_dbg (0x180 bytes) for DMEM[0x1F10]...\n");
         CopyMem(img + 0x6010, img + 0x8A10, 0x180);
     }
 
@@ -2934,7 +2934,7 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
     mmio_write32(GSP_CPUCTL, 2);          /* STARTCPU */
     mmio_write32(GSP_BCR, 0x111);         /* RISCV+BRFETCH после старта (трейс!) */
     uefi_call_wrapper(BS->Stall, 1, 1000000);
-    Print(L"[1] после booter: cpuctl=0x%x dbg=0x%x mbox0=0x%x bcr=0x%x "
+    Print(L"[1] after booter: cpuctl=0x%x dbg=0x%x mbox0=0x%x bcr=0x%x "
           L"GFW=0x%x WPR2lo=0x%x PLM=0x%x\n",
           mmio_read32(GSP_CPUCTL), mmio_read32(GSP_BASE + 0x94),
           mmio_read32(GSP_MAILBOX0), mmio_read32(GSP_BCR),
@@ -2943,7 +2943,7 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
     dump_regs(L"[1-booter]");
 
     /* ---------- Стадия 2: FWSEC МОДИФИЦИРОВАННЫЙ (frts=0x10000000) ---------- */
-    Print(L"\n[2/3] GSP FWSEC load ucodeId=9 (МОДИФ. frts=0x10000000, дискриминация)\n");
+    Print(L"\n[2/3] GSP FWSEC load ucodeId=9 (modified frts=0x10000000)\n");
     {
         UINT8 *buf = (UINT8*)(UINTN)fwsecPhys;
         UINT32 *mapper2 = (UINT32*)(buf + FWSEC_DATA_OFF + 0x560);
@@ -2974,10 +2974,10 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
     mmio_write32(0x110004, 0x40);
     mmio_write32(0x1103E8, 0x1);
 
-    Print(L"[2] DMA IMEM SEC=1 0xE200 б...\n");
+    Print(L"[2] DMA IMEM SEC=1 0xE200 bytes...\n");
     gsp_dma_transfer(0, 0, fwsecPhys, FWSEC_CODE_SIZE,
                      0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-    Print(L"[2] DMA DMEM SEC=0 0x800 б...\n");
+    Print(L"[2] DMA DMEM SEC=0 0x800 bytes...\n");
     gsp_dma_transfer(0, 0, fwsecPhys + FWSEC_DATA_OFF, FWSEC_DMEM_SIZE,
                      0 | (6 << 8) | (0 << 12));
 
@@ -2989,13 +2989,13 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
     __asm__ volatile("wbinvd" ::: "memory");
     mmio_write32(GSP_CPUCTL, 2);
 
-    Print(L"[2] жду WPR2 (наш код → lo=0x100000; предзагруженный → 0x27FE000):\n");
+    Print(L"[2] waiting for WPR2 (our code -> lo=0x100000; preloaded -> 0x27FE000):\n");
     for (i = 0; i < 2000; i++) {
         UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO);
         UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI);
         if ((lo & 0xFFFFFFF0) == 0x00100000) {
-            Print(L"[2] *** WPR2=0x%08x%08x — НАШ модиф. код выполнился! "
-                  L"SEC=1 на GSP РАБОТАЕТ после booter! ***\n", hi, lo);
+            Print(L"[2] *** WPR2=0x%08x%08x - OUR modified code executed! "
+                  L"GSP SEC=1 WORKS after booter! ***\n", hi, lo);
             ourCode = TRUE;
             break;
         }
@@ -3004,9 +3004,9 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
                   i, lo, hi, mmio_read32(GSP_CPUCTL), mmio_read32(GSP_BASE + 0x94));
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"[2] итог: wpr2lo=0x%08x hi=0x%08x (%s)\n",
+    Print(L"[2] result: wpr2lo=0x%08x hi=0x%08x (%s)\n",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI),
-          ourCode ? L"НАШ КОД!" : L"предзагруженный код — SEC=1 всё ещё закрыт");
+          ourCode ? L"OUR CODE!" : L"preloaded code - SEC=1 is still locked");
     dump_regs(L"[2-fwsec]");
 
     /* ---------- Стадия 3a (v2.48): ЗОНД ДОСТАВКИ DMA в IMEM SEC2 ----------
@@ -3015,7 +3015,7 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
      * IMEM[0x8400], читаем оба через порты (ns + secure bit28).
      *   SEC=0 лег, SEC=1 нет → SEC=1 на SEC2 scrub (канал закрыт) — H1.
      *   оба легли → 0x780009 от BROM-предусловия (не от пустого IMEM) — H2. */
-    Print(L"\n[3a] ЗОНД доставки DMA в SEC2 IMEM (v2.48)...\n");
+    Print(L"\n[3a] DMA delivery probe into SEC2 IMEM (v2.48)...\n");
     {
         UINT32 marker0 = 0x11111111, marker1 = 0x22222222;
         UINT32 vns, vsec;
@@ -3049,8 +3049,8 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
                 vns = mmio_read32(SEC2_IMEMD0);
                 mmio_write32(SEC2_IMEMC0, 0x8000 | (1 << 28));
                 vsec = mmio_read32(SEC2_IMEMD0);
-                Print(L"[3a] SEC=0 → IMEM[0x8000]: ns=0x%08x sec=0x%08x "
-                      L"(ожидаю 0x11111111; DEAD5EC1 = scrub)\n", vns, vsec);
+                Print(L"[3a] SEC=0 -> IMEM[0x8000]: ns=0x%08x sec=0x%08x "
+                      L"(expected 0x11111111; DEAD5EC1 = scrub)\n", vns, vsec);
 
                 for (i = 0; i < 0x100 / 4; i++) pbuf[i] = marker1;
                 mmio_write32(SEC2_DMATRFBASE, (UINT32)(probePhys >> 8));
@@ -3064,8 +3064,8 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
                 vns = mmio_read32(SEC2_IMEMD0);
                 mmio_write32(SEC2_IMEMC0, 0x8400 | (1 << 28));
                 vsec = mmio_read32(SEC2_IMEMD0);
-                Print(L"[3a] SEC=1 → IMEM[0x8400]: ns=0x%08x sec=0x%08x "
-                      L"(ожидаю 0x22222222; DEAD5EC1 = scrub)\n", vns, vsec);
+                Print(L"[3a] SEC=1 -> IMEM[0x8400]: ns=0x%08x sec=0x%08x "
+                      L"(expected 0x22222222; DEAD5EC1 = scrub)\n", vns, vsec);
             } else {
                 Print(L"[3a] alloc probe: %r\n", probePhys);
             }
@@ -3073,7 +3073,7 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
     }
 
     /* ---------- Стадия 3b (v2.49): SEC2 booter load — ПРАВИЛЬНЫЕ размеры ----
-     * Ground truth (2026-08-21, живой драйвер, CMP90_BLDUMP_HS + трейс):
+     * Ground truth (2026-08-21, live driver, legacy BLDUMP_HS trace):
      *   imemSize=0x8900, imemVa=0x100 (FBOFFS стартует 0x100), dataOffset=0x8A00,
      *   dmemSize=0x6200, hsSigDmemAddr=0x10, ucodeId=3, engmask=1, BOOTVEC=0x100.
      * Размеры 0x4F00/0x5000/0x4D00 (v2.41) — ИЛЛЮЗИЯ обрезанного/rate-limited
@@ -3082,8 +3082,8 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
      * WPR meta: sysmemAddrOfSignature = V67 (0xFA00) — canary-баг в booter'е
      * при обработке сигнатуры запустит ROP-цепочку → PLM OPEN.
      * Доставка IMEM: A) DMA SEC=1 (как драйвер), B) порты IMEMC (v2.18). */
-    Print(L"\n[3b/3] SEC2 booter load ucodeId=3 — ПРАВИЛЬНЫЕ размеры "
-          L"(0x8900/0x8A00/0x6200, V67-сигнатура)\n");
+    Print(L"\n[3b/3] SEC2 booter load ucodeId=3 - CORRECT sizes "
+          L"(0x8900/0x8A00/0x6200, V67 signature)\n");
     /* свежая копия образа (стадия 1 патчила src[0x6010] внутри data-региона) */
     CopyMem((VOID*)(UINTN)ucodePhys, booter_ucode_prod, BOOTER_UCODE_SIZE);
 
@@ -3092,8 +3092,8 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
         BOOLEAN portLoad;
 
         for (portLoad = FALSE; ; portLoad = TRUE) {
-            Print(L"[3b] вариант %s (%s IMEM)...\n",
-                  portLoad ? L"B: порты" : L"A: DMA",
+            Print(L"[3b] variant %s (%s IMEM)...\n",
+                  portLoad ? L"B: ports" : L"A: DMA",
                   portLoad ? L"IMEMC/IMEMD, SECURE bit28" : L"DMA SEC=1");
 
             /* WPR2 нормализуем (booter валидирует раскладку) */
@@ -3122,23 +3122,23 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
 
             if (!portLoad) {
                 /* A: DMA — IMEM 0x8900 SEC=1 (src+0x100), DMEM 0x6200 SEC=0
-                 * (src+0x8A00 — сигнатура ложится на DMEM[0x10] сама!) */
-                Print(L"[3b-A] DMA IMEM SEC=1 (0x8900 б, src+0x100)...\n");
+                 * (src+0x8A00 — signature lands at DMEM[0x10]) */
+                Print(L"[3b-A] DMA IMEM SEC=1 (0x8900 bytes, src+0x100)...\n");
                 falcon_dma_transfer(0, 0x100, ucodePhys, 0x8900,
                                     0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-                Print(L"[3b-A] DMA DMEM SEC=0 (0x6200 б, src+0x8A00)...\n");
+                Print(L"[3b-A] DMA DMEM SEC=0 (0x6200 bytes, src+0x8A00)...\n");
                 falcon_dma_transfer(0, 0, ucodePhys + 0x8A00, 0x6200,
                                     0 | (6 << 8) | (0 << 12));
             } else {
                 /* B: порты — IMEM image[0x100..0x89FF] → IMEM[0..0x88FF]
                  * (SECURE bit28), DMEM image[0x8A00..0xEBFF] → DMEM[0..0x61FF] */
                 const UINT8 *img = (const UINT8*)(UINTN)ucodePhys;
-                Print(L"[3b-B] порты IMEM (SECURE, 0x8900 б)...\n");
+                Print(L"[3b-B] IMEM ports (SECURE, 0x8900 bytes)...\n");
                 mmio_write32(SEC2_IMEMC0, (1 << 28) | (1 << 24));  /* SECURE|AINCW */
                 for (i = 0; i < 0x8900 / 4; i++)
                     mmio_write32(SEC2_IMEMD0,
                         *(UINT32*)(img + 0x100 + i * 4));
-                Print(L"[3b-B] порты DMEM (0x6200 б)...\n");
+                Print(L"[3b-B] DMEM ports (0x6200 bytes)...\n");
                 mmio_write32(SEC2_DMEMC0, (1 << 24));              /* AINCW */
                 for (i = 0; i < 0x6200 / 4; i++)
                     mmio_write32(SEC2_DMEMD0,
@@ -3150,10 +3150,10 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
             data = mmio_read32(SEC2_IMEMD0);
             mmio_write32(SEC2_IMEMC0, (1 << 28) | 0x100);
             Print(L"[3b] IMEM_S[0]=0x%08x IMEM_S[0x100]=0x%08x "
-                  L"(ожидаю %08x — код)\n", data, mmio_read32(SEC2_IMEMD0),
+                  L"(expected %08x - code)\n", data, mmio_read32(SEC2_IMEMD0),
                   *(UINT32*)((UINTN)ucodePhys + 0x100));
             mmio_write32(SEC2_DMEMC0, 0x10);
-            Print(L"[3b] DMEM[0x10]=0x%08x (ожидаю a9d43de4 — sig!)\n",
+            Print(L"[3b] DMEM[0x10]=0x%08x (expected a9d43de4 - signature!)\n",
                   mmio_read32(SEC2_DMEMD0));
 
             mmio_write32(SEC2_BROM_PARAADDR0, BOOTER_HS_SIG_DMEM_ADDR);
@@ -3163,15 +3163,15 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
             data = (data & ~0xFF) | 0x1;          /* RSA3K */
             mmio_write32(SEC2_MOD_SEL, data);
             mmio_write32(SEC2_BOOTVEC, 0x100);
-            mmio_write32(SEC2_MAILBOX0, (UINT32)(cmp90_meta_low(wprMetaPhys) & 0xFFFFFFFF));
-            mmio_write32(SEC2_MAILBOX1, (UINT32)((cmp90_meta_low(wprMetaPhys) >> 32) & 0xFFFFFFFF));
+            mmio_write32(SEC2_MAILBOX0, (UINT32)(cmp40_meta_low(wprMetaPhys) & 0xFFFFFFFF));
+            mmio_write32(SEC2_MAILBOX1, (UINT32)((cmp40_meta_low(wprMetaPhys) >> 32) & 0xFFFFFFFF));
             __asm__ volatile("wbinvd" ::: "memory");
             mmio_write32(SEC2_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
 
-            Print(L"[3b] CPU started, polling PLM до 5с (V67-цепочка)...\n");
+            Print(L"[3b] CPU started, polling PLM for 5s (V67 chain)...\n");
             for (p = 0; p < 5000; p++) {
                 if (mmio_read32(REG_FEAT_OVR_PLM) == VAL_PLM_OPEN) {
-                    Print(L"[3b-%s] *** PLM OPEN после %d ms! ***\n",
+                    Print(L"[3b-%s] *** PLM OPEN after %d ms! ***\n",
                           portLoad ? L"B" : L"A", p);
                     plmOpen = TRUE;
                     break;
@@ -3183,7 +3183,7 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
                           mmio_read32(SEC2_MAILBOX0));
                 uefi_call_wrapper(BS->Stall, 1, 1000);
             }
-            Print(L"[3b-%s] итог: PLM=0x%08x cpu=0x%x irq=0x%x dbg=0x%x mbox0=0x%x\n",
+            Print(L"[3b-%s] result: PLM=0x%08x cpu=0x%x irq=0x%x dbg=0x%x mbox0=0x%x\n",
                   portLoad ? L"B" : L"A", mmio_read32(REG_FEAT_OVR_PLM),
                   mmio_read32(SEC2_CPUCTL), mmio_read32(SEC2_IRQSTAT),
                   mmio_read32(SEC2_DEBUGINFO), mmio_read32(SEC2_MAILBOX0));
@@ -3200,7 +3200,7 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
      * GSP (ucodeId=3, engmask=0x400), mailboxes=WPR meta (V67-сигнатура!).
      * Если GSP BROM верифицирует sig_dbg (DMEM[0x10]) и запустит booter —
      * booter обработает V67-сигнатуру → canary-баг → ROP → PLM OPEN! */
-    Print(L"\n[3c] GSP-DIRECT booter load (SEC2 ucode на GSP, V67)...\n");
+    Print(L"\n[3c] GSP-DIRECT booter load (SEC2 ucode on GSP, V67)...\n");
     {
         UINTN p;
         UINT32 ucodeIdTry;
@@ -3235,19 +3235,19 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
             data = (data & ~0x7) | 0x5;
             mmio_write32(GSP_FBIF_TRANSCFG0, data);
 
-            Print(L"[3c] DMA IMEM SEC=1 (0x8900 б, src+0x100) в GSP IMEM...\n");
+            Print(L"[3c] DMA IMEM SEC=1 (0x8900 bytes, src+0x100) into GSP IMEM...\n");
             gsp_dma_transfer(0, 0x100, ucodePhys, 0x8900,
                              0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-            Print(L"[3c] DMA DMEM SEC=0 (0x6200 б, src+0x8A00) в GSP DMEM...\n");
+            Print(L"[3c] DMA DMEM SEC=0 (0x6200 bytes, src+0x8A00) into GSP DMEM...\n");
             gsp_dma_transfer(0, 0, ucodePhys + 0x8A00, 0x6200,
                              0 | (6 << 8) | (0 << 12));
 
             /* верификация */
             mmio_write32(GSP_BASE + 0x1C0, 0x10);
-            Print(L"[3c] GSP DMEM[0x10]=0x%08x (ожидаю a9d43de4 — sig)\n",
+            Print(L"[3c] GSP DMEM[0x10]=0x%08x (expected a9d43de4 - signature)\n",
                   mmio_read32(GSP_BASE + 0x1C4));
             mmio_write32(GSP_BASE + 0x180, (1 << 28));
-            Print(L"[3c] GSP IMEM_S[0]=0x%08x (ожидаю 29f1b35e — код)\n",
+            Print(L"[3c] GSP IMEM_S[0]=0x%08x (expected 29f1b35e - code)\n",
                   mmio_read32(GSP_BASE + 0x184));
 
             mmio_write32(GSP_BROM_PARAADDR0, 0x10);
@@ -3260,10 +3260,10 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
             __asm__ volatile("wbinvd" ::: "memory");
             mmio_write32(GSP_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
 
-            Print(L"[3c] STARTCPU (GSP), polling PLM до 5с (V67-цепочка)...\n");
+            Print(L"[3c] STARTCPU (GSP), polling PLM for 5s (V67 chain)...\n");
             for (p = 0; p < 5000; p++) {
                 if (mmio_read32(REG_FEAT_OVR_PLM) == VAL_PLM_OPEN) {
-                    Print(L"[3c] *** PLM OPEN после %d ms! ***\n", p);
+                    Print(L"[3c] *** PLM OPEN after %d ms! ***\n", p);
                     plmOpen = TRUE;
                     break;
                 }
@@ -3274,7 +3274,7 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
                           mmio_read32(GSP_MAILBOX0));
                 uefi_call_wrapper(BS->Stall, 1, 1000);
             }
-            Print(L"[3c] итог: PLM=0x%08x gsp=0x%x dbg=0x%x bcr=0x%x mbox0=0x%x\n",
+            Print(L"[3c] result: PLM=0x%08x gsp=0x%x dbg=0x%x bcr=0x%x mbox0=0x%x\n",
                   mmio_read32(REG_FEAT_OVR_PLM), mmio_read32(GSP_CPUCTL),
                   mmio_read32(GSP_BASE + 0x94), mmio_read32(GSP_BCR),
                   mmio_read32(GSP_MAILBOX0));
@@ -3286,13 +3286,13 @@ driver_replay_v246(UINT64 booterPhys, UINT64 fwsecPhys, UINT64 ucodePhys,
 
     /* ---------- Финальные проверки ---------- */
     if (plmOpen || ourCode) {
-        Print(L"v2.46: *** реплей дал результат — записываю SS0/SS1 ***\n");
+        Print(L"v2.46: *** replay produced a result - writing SS0/SS1 ***\n");
         mmio_write32(REG_FEAT_OVR_SM_SPD_1, VAL_SS1_UNLOCKED);
         mmio_write32(REG_FEAT_OVR_SM_SPD, VAL_SS0_UNLOCKED);
         uefi_call_wrapper(BS->Stall, 1, 100000);
         dump_regs(L"[v2.46-unlock]");
     } else {
-        Print(L"v2.46: результата нет. Пробую прямую запись SS0/SS1 "
+        Print(L"v2.46: no result. Trying direct SS0/SS1 writes "
               L"(rejoin15-style)...\n");
         mmio_write32(REG_FEAT_OVR_SM_SPD_1, VAL_SS1_UNLOCKED);
         mmio_write32(REG_FEAT_OVR_SM_SPD, VAL_SS0_UNLOCKED);
@@ -3324,8 +3324,8 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
     BOOLEAN sbChanged = FALSE;
     BOOLEAN plmOpen = FALSE;
 
-    Print(L"\n=== v2.51: FWSEC re-load + SB → SEC2 booter (V67) ===\n");
-    Print(L"исходное: PLM=0x%08x SS0=0x%08x WPR2lo=0x%08x privmask=0x%08x\n",
+    Print(L"\n=== v2.51: FWSEC reload + SB -> SEC2 booter (V67) ===\n");
+    Print(L"initial: PLM=0x%08x SS0=0x%08x WPR2lo=0x%08x privmask=0x%08x\n",
           mmio_read32(REG_FEAT_OVR_PLM), mmio_read32(REG_FEAT_OVR_SM_SPD),
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(0x00118128));
 
@@ -3334,7 +3334,7 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
      * dbg=0x0). В v2.28-34 WPR2 ставился за 9мс — там был IMEM SEC=1 DMA
      * (0xE200) + DMEM (FRTS) + BROM + STARTCPU. Воспроизводим точно:
      * IMEM DMA доставляет (v2.46) — BROM принимает FWSEC (GSP-ключ + sig[2]). */
-    Print(L"[1] FWSEC FRTS (полная v2.28-34: IMEM+DMEM+FRTS)...\n");
+    Print(L"[1] FWSEC FRTS (full v2.28-34: IMEM+DMEM+FRTS)...\n");
     {
         UINT8 *buf = (UINT8*)(UINTN)fwsecPhys;
         UINT32 *mapper2 = (UINT32*)(buf + FWSEC_DATA_OFF + 0x560);
@@ -3375,10 +3375,10 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
     data = (data & ~0x7) | 0x5;
     mmio_write32(GSP_FBIF_TRANSCFG0, data);
 
-    Print(L"[1] DMA IMEM SEC=1 (0xE200 б)...\n");
+    Print(L"[1] DMA IMEM SEC=1 (0xE200 bytes)...\n");
     gsp_dma_transfer(0, 0, fwsecPhys, FWSEC_CODE_SIZE,
                      0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-    Print(L"[1] DMA DMEM SEC=0 (0x800 б, FRTS cmd)...\n");
+    Print(L"[1] DMA DMEM SEC=0 (0x800 bytes, FRTS command)...\n");
     gsp_dma_transfer(0, 0, fwsecPhys + FWSEC_DATA_OFF, FWSEC_DMEM_SIZE,
                      0 | (6 << 8) | (0 << 12));
 
@@ -3390,13 +3390,13 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
     __asm__ volatile("wbinvd" ::: "memory");
     mmio_write32(GSP_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
 
-    Print(L"[1] жду WPR2 до 5с (предзагруженный FWSEC + наш FRTS → 0x27FE000):\n");
+    Print(L"[1] waiting up to 5s for WPR2 (preloaded FWSEC + our FRTS -> 0x27FE000):\n");
     for (i = 0; i < 5000; i++) {
         UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO);
         UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI);
         if ((lo & 0xFFFFFFF0) == 0x027FE000 && (hi & 0xFFFFFFF0) == 0x027FEE00) {
-            Print(L"[1] *** WPR2 УСТАНОВЛЕН lo=0x%08x hi=0x%08x после %d ms "
-                  L"— предзагруженный FWSEC выполнил наш FRTS! ***\n",
+            Print(L"[1] *** WPR2 SET lo=0x%08x hi=0x%08x after %d ms "
+                  L"- preloaded FWSEC executed our FRTS! ***\n",
                   lo, hi, i);
             fwsecOk = TRUE;
             break;
@@ -3406,8 +3406,8 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
                   i, lo, mmio_read32(GSP_CPUCTL), mmio_read32(GSP_BASE + 0x94));
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"[1] итог: WPR2=%s (lo=0x%08x hi=0x%08x)\n",
-          fwsecOk ? L"УСТАНОВЛЕН" : L"НЕ установлен",
+    Print(L"[1] result: WPR2=%s (lo=0x%08x hi=0x%08x)\n",
+          fwsecOk ? L"INSTALLED" : L"NOT installed",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI));
     dump_regs(L"[1-fwsec]");
 
@@ -3427,8 +3427,8 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
         uefi_call_wrapper(BS->Stall, 1, 500000);
         privA = mmio_read32(0x00118128);
         sbChanged = (privA != priv0);
-        Print(L"[2] SB (0x19): privmask 0x%08x → 0x%08x%s\n",
-              priv0, privA, sbChanged ? L" <<< ИЗМЕНЕНИЕ (SB сработал!)" : L"");
+        Print(L"[2] SB (0x19): privmask 0x%08x -> 0x%08x%s\n",
+              priv0, privA, sbChanged ? L" <<< CHANGED (SB active!)" : L"");
         dump_regs(L"[2-sb]");
     }
 
@@ -3460,15 +3460,15 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
     data = (data & ~0x7) | 0x5;
     mmio_write32(SEC2_FBIF_TRANSCFG0, data);
 
-    Print(L"[3] DMA IMEM SEC=1 (0x8900 б, src+0x100)...\n");
+    Print(L"[3] DMA IMEM SEC=1 (0x8900 bytes, src+0x100)...\n");
     falcon_dma_transfer(0, 0x100, ucodePhys, 0x8900,
                         0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-    Print(L"[3] DMA DMEM SEC=0 (0x6200 б, src+0x8A00)...\n");
+    Print(L"[3] DMA DMEM SEC=0 (0x6200 bytes, src+0x8A00)...\n");
     falcon_dma_transfer(0, 0, ucodePhys + 0x8A00, 0x6200,
                         0 | (6 << 8) | (0 << 12));
 
     mmio_write32(SEC2_DMEMC0, 0x10);
-    Print(L"[3] DMEM[0x10]=0x%08x (ожидаю a9d43de4 — sig)\n",
+    Print(L"[3] DMEM[0x10]=0x%08x (expected a9d43de4 - signature)\n",
           mmio_read32(SEC2_DMEMD0));
 
     mmio_write32(SEC2_BROM_PARAADDR0, BOOTER_HS_SIG_DMEM_ADDR);
@@ -3478,15 +3478,15 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
     data = (data & ~0xFF) | 0x1;          /* RSA3K */
     mmio_write32(SEC2_MOD_SEL, data);
     mmio_write32(SEC2_BOOTVEC, 0x100);
-    mmio_write32(SEC2_MAILBOX0, (UINT32)(cmp90_meta_low(wprMetaPhys) & 0xFFFFFFFF));
-    mmio_write32(SEC2_MAILBOX1, (UINT32)((cmp90_meta_low(wprMetaPhys) >> 32) & 0xFFFFFFFF));
+    mmio_write32(SEC2_MAILBOX0, (UINT32)(cmp40_meta_low(wprMetaPhys) & 0xFFFFFFFF));
+    mmio_write32(SEC2_MAILBOX1, (UINT32)((cmp40_meta_low(wprMetaPhys) >> 32) & 0xFFFFFFFF));
     __asm__ volatile("wbinvd" ::: "memory");
     mmio_write32(SEC2_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
 
-    Print(L"[3] STARTCPU (SEC2), polling PLM до 5с (V67-цепочка)...\n");
+    Print(L"[3] STARTCPU (SEC2), polling PLM for 5s (V67 chain)...\n");
     for (i = 0; i < 5000; i++) {
         if (mmio_read32(REG_FEAT_OVR_PLM) == VAL_PLM_OPEN) {
-            Print(L"[3] *** PLM OPEN после %d ms! ***\n", i);
+            Print(L"[3] *** PLM OPEN after %d ms! ***\n", i);
             plmOpen = TRUE;
             break;
         }
@@ -3496,7 +3496,7 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
                   mmio_read32(SEC2_DEBUGINFO), mmio_read32(SEC2_MAILBOX0));
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"[3] итог: PLM=0x%08x cpu=0x%x irq=0x%x dbg=0x%x mbox0=0x%x\n",
+    Print(L"[3] result: PLM=0x%08x cpu=0x%x irq=0x%x dbg=0x%x mbox0=0x%x\n",
           mmio_read32(REG_FEAT_OVR_PLM), mmio_read32(SEC2_CPUCTL),
           mmio_read32(SEC2_IRQSTAT), mmio_read32(SEC2_DEBUGINFO),
           mmio_read32(SEC2_MAILBOX0));
@@ -3511,7 +3511,7 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
      * сигнатура VBIOS на DMEM[0x6DC] — BROM проверит и ЗАПУСТИТ
      * предзагруженный код → он обработает WPR meta (V67-сигнатура!) →
      * canary-баг → ROP → PLM! IMEM DMA НЕ нужен (код уже там!). */
-    Print(L"\n[4] SEC2 предзагруженный ucode (ucodeId=10, sig из VBIOS)...\n");
+    Print(L"\n[4] SEC2 preloaded ucode (ucodeId=10, signature from VBIOS)...\n");
     {
         UINTN p;
         UINT32 appidTry = 0x89;
@@ -3548,11 +3548,11 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
 
             /* DMEM: данные из образа (imemLoad=0x4400, 0x8F4 б) — сигнатура
              * патчена на DMEM[0x6DC] */
-            Print(L"[4] DMA DMEM SEC=0 (0x8F4 б, src+0x4400)...\n");
+            Print(L"[4] DMA DMEM SEC=0 (0x8F4 bytes, src+0x4400)...\n");
             falcon_dma_transfer(0, 0, ucodePhys + 0x4400, 0x8F4,
                                 0 | (6 << 8) | (0 << 12));
             mmio_write32(SEC2_DMEMC0, 0x6DC);
-            Print(L"[4] DMEM[0x6DC]=0x%08x (ожидаю sig[2][0]: %08x)\n",
+            Print(L"[4] DMEM[0x6DC]=0x%08x (expected sig[2][0]: %08x)\n",
                   mmio_read32(SEC2_DMEMD0),
                   *(UINT32*)((UINTN)sec2img + 0x4400 + 0x6DC));
             /* v2.55: дамп DMEM[0x600..0x700] в NS и SECURE-представлениях */
@@ -3576,23 +3576,23 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
             data = (data & ~0xFF) | 0x1;          /* RSA3K */
             mmio_write32(SEC2_MOD_SEL, data);
             mmio_write32(SEC2_BOOTVEC, 0);        /* imemVa=0 */
-            mmio_write32(SEC2_MAILBOX0, (UINT32)(cmp90_meta_low(wprMetaPhys) & 0xFFFFFFFF));
-            mmio_write32(SEC2_MAILBOX1, (UINT32)((cmp90_meta_low(wprMetaPhys) >> 32) & 0xFFFFFFFF));
+            mmio_write32(SEC2_MAILBOX0, (UINT32)(cmp40_meta_low(wprMetaPhys) & 0xFFFFFFFF));
+            mmio_write32(SEC2_MAILBOX1, (UINT32)((cmp40_meta_low(wprMetaPhys) >> 32) & 0xFFFFFFFF));
             __asm__ volatile("wbinvd" ::: "memory");
             mmio_write32(SEC2_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
 
             /* v2.56: BCR=RISCV после STARTCPU (как GSP booter load у драйвера) */
             mmio_write32(SEC2_BCR_CTRL, 0x111);
             for (i = 0; i < 16; i++) mmio_read32(SEC2_BCR_CTRL);
-            Print(L"[4] BCR после STARTCPU+0x111 = 0x%x (0x111 = RISCV!)\n",
+            Print(L"[4] BCR after STARTCPU+0x111 = 0x%x (0x111 = RISC-V!)\n",
                   mmio_read32(SEC2_BCR_CTRL));
 
-            Print(L"[4] STARTCPU (SEC2), polling PLM до 5с (V67-цепочка)...\n");
+            Print(L"[4] STARTCPU (SEC2), polling PLM for 5s (V67 chain)...\n");
             for (p = 0; p < 5000; p++) {
                 UINT32 trIdx = mmio_read32(NV_PSEC_BASE + 0x148);
                 UINT32 trPc = mmio_read32(NV_PSEC_BASE + 0x14C);
                 if (mmio_read32(REG_FEAT_OVR_PLM) == VAL_PLM_OPEN) {
-                    Print(L"[4] *** PLM OPEN после %d ms! ***\n", p);
+                    Print(L"[4] *** PLM OPEN after %d ms! ***\n", p);
                     plmOpen = TRUE;
                     break;
                 }
@@ -3605,7 +3605,7 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
                           mmio_read32(SEC2_MAILBOX0));
                 uefi_call_wrapper(BS->Stall, 1, 1000);
             }
-            Print(L"[4] итог: PLM=0x%08x cpu=0x%x irq=0x%x dbg=0x%x mbox0=0x%x\n",
+            Print(L"[4] result: PLM=0x%08x cpu=0x%x irq=0x%x dbg=0x%x mbox0=0x%x\n",
                   mmio_read32(REG_FEAT_OVR_PLM), mmio_read32(SEC2_CPUCTL),
                   mmio_read32(SEC2_IRQSTAT), mmio_read32(SEC2_DEBUGINFO),
                   mmio_read32(SEC2_MAILBOX0));
@@ -3625,7 +3625,7 @@ driver_replay_v251(UINT64 fwsecPhys, UINT64 ucodePhys, UINT64 wprMetaPhys)
  * Preloaded ucode (ucodeId=10) is FWSEC-family: DMAP v3 mapper at
  * DMEM[0x698], init_cmd@0x6C4, cmd_in@0x23D0, sig@0x6DC (accepted by
  * BROM). Pokes FRTS(0x15)/SB(0x19) commands via port writes and watches
- * WPR2/privmask. Skipped by default (cmp90_skipMapper=1) — not part of
+ * WPR2/privmask. Skipped by default (cmp40_skipMapper=1) - not part of
  * the real driver flow.
  * SEC2-ucode (ucodeId=10, предзагружен VBIOS при POST) = FWSEC-семья:
  * mapper "DMAP" v3 @DMEM[0x698] (init_cmd@+44=0x6C4, cmd_in@0x23D0,
@@ -3690,7 +3690,7 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
     }
 
     /* ---------- 2. cmd_in буфер @0x23D0 (не-secure!) ← FRTS cmd ---------- */
-    Print(L"[5] cmd_in @0x23D0 <- FRTS cmd (44Б, явная адресация)...\n");
+    Print(L"[5] cmd_in @0x23D0 <- FRTS command (44 bytes, explicit addressing)...\n");
     for (i = 0; i < 11; i++) {
         mmio_write32(SEC2_DMEMC0, 0x23D0 + i * 4);
         mmio_write32(SEC2_DMEMD0, frtsCmd[i]);
@@ -3709,7 +3709,7 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
     mmio_write32(SEC2_DMEMC0, 0x6C4);
     Print(L"[5]   ns =0x%08x", mmio_read32(SEC2_DMEMD0));
     mmio_write32(SEC2_DMEMC0, 0x6C4 | (1 << 28));
-    Print(L" sec=0x%08x (0x15 = порт пишет secure-зону!)\n", mmio_read32(SEC2_DMEMD0));
+    Print(L" sec=0x%08x (0x15 = port writes secure area!)\n", mmio_read32(SEC2_DMEMD0));
 
     /* ---------- 4. BROM params + STARTCPU (ucodeId=10, как стадия 4) ----- */
     mmio_write32(SEC2_BROM_PARAADDR0, 0x6DC);
@@ -3719,18 +3719,18 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
     data = (data & ~0xFF) | 0x1;               /* RSA3K */
     mmio_write32(SEC2_MOD_SEL, data);
     mmio_write32(SEC2_BOOTVEC, 0);
-    mmio_write32(SEC2_MAILBOX0, (UINT32)(cmp90_meta_low(wprMetaPhys) & 0xFFFFFFFF));
-    mmio_write32(SEC2_MAILBOX1, (UINT32)((cmp90_meta_low(wprMetaPhys) >> 32) & 0xFFFFFFFF));
+    mmio_write32(SEC2_MAILBOX0, (UINT32)(cmp40_meta_low(wprMetaPhys) & 0xFFFFFFFF));
+    mmio_write32(SEC2_MAILBOX1, (UINT32)((cmp40_meta_low(wprMetaPhys) >> 32) & 0xFFFFFFFF));
     __asm__ volatile("wbinvd" ::: "memory");
     mmio_write32(SEC2_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
 
-    Print(L"[5] STARTCPU (ucodeId=10), polling WPR2 до 5с (FRTS)...\n");
+    Print(L"[5] STARTCPU (ucodeId=10), polling WPR2 for 5s (FRTS)...\n");
     for (p = 0; p < 5000; p++) {
         UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO);
         UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI);
         if ((lo & 0xFFFFFFF0) == 0x027FE000 && (hi & 0xFFFFFFF0) == 0x027FEE00) {
-            Print(L"[5] *** WPR2 УСТАНОВЛЕН lo=0x%08x hi=0x%08x после %d ms — "
-                  L"SEC2 ucode выполнил FRTS! ***\n", lo, hi, p);
+            Print(L"[5] *** WPR2 SET lo=0x%08x hi=0x%08x after %d ms - "
+                  L"SEC2 ucode executed FRTS! ***\n", lo, hi, p);
             wpr2set = TRUE;
             break;
         }
@@ -3740,8 +3740,8 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
                   mmio_read32(SEC2_BCR_CTRL));
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"[5] FRTS итог: WPR2=%s lo=0x%08x hi=0x%08x cpu=0x%x dbg=0x%x\n",
-          wpr2set ? L"УСТАНОВЛЕН" : L"НЕТ",
+    Print(L"[5] FRTS result: WPR2=%s lo=0x%08x hi=0x%08x cpu=0x%x dbg=0x%x\n",
+          wpr2set ? L"INSTALLED" : L"NOT SET",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI),
           mmio_read32(SEC2_CPUCTL), mmio_read32(SEC2_DEBUGINFO));
     /* cmd_out @0x2410 — ucode пишет сюда результат команды (диагностика) */
@@ -3754,7 +3754,7 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
     dump_regs(L"[5-frts]");
 
     /* ---------- 5. SB (init_cmd=0x19 + cmd @0x23D0) ---------- */
-    Print(L"[5] SB: init_cmd=0x19 @0x6C4, cmd 24Б @0x23D0...\n");
+    Print(L"[5] SB: init_cmd=0x19 @0x6C4, command 24 bytes @0x23D0...\n");
     /* cmd_in <- SB cmd (readVbiosDesc) */
     for (i = 0; i < 6; i++) {
         mmio_write32(SEC2_DMEMC0, 0x23D0 + i * 4);
@@ -3773,12 +3773,12 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
         privA = mmio_read32(0x00118128);
         sbChanged = (privA != priv0);
         Print(L"[5] SB (0x19): privmask 0x%08x -> 0x%08x%s\n",
-              priv0, privA, sbChanged ? L" <<< ИЗМЕНЕНИЕ (SB сработал!)" : L"");
+              priv0, privA, sbChanged ? L" <<< CHANGED (SB active!)" : L"");
     }
     dump_regs(L"[5-sb]");
 
-    Print(L"[5] итог: WPR2=%s SB=%s PLM=0x%08x\n",
-          wpr2set ? L"OK" : L"нет", sbChanged ? L"OK" : L"нет",
+    Print(L"[5] result: WPR2=%s SB=%s PLM=0x%08x\n",
+          wpr2set ? L"OK" : L"NOT SET", sbChanged ? L"OK" : L"NOT SET",
           mmio_read32(REG_FEAT_OVR_PLM));
 
     return wpr2set || sbChanged || is_unlocked();
@@ -3854,7 +3854,7 @@ static void
 probe_preload(void)
 {
     UINTN i;
-    Print(L"\n=== v2.57-4: ЗОНД ПРЕДЗАГРУЗКИ (IMEM/DMEM GSP+SEC2, NS|SEC) ===\n");
+    Print(L"\n=== v2.57-4: PRELOAD PROBE (IMEM/DMEM GSP+SEC2, NS|SEC) ===\n");
     Print(L"[pre] GSP IMEM[0x00..0x2F]:\n");
     for (i = 0; i < 0x30; i += 4) {
         UINT32 vn, vs;
@@ -3911,30 +3911,30 @@ direct_write_probe(void)
 {
     UINT32 v;
 
-    Print(L"\n--- v2.26: ПРЯМАЯ запись FEAT_OVR (host probe) ---\n");
+    Print(L"\n--- v2.26: DIRECT FEAT_OVR write (host probe) ---\n");
     mmio_write32(REG_FEAT_OVR_PLM, VAL_PLM_OPEN);
     v = mmio_read32(REG_FEAT_OVR_PLM);
-    Print(L"probe: PLM=0x%08x после записи 0xFFFFFFFF (0xFFFFFF8F = запись игнор)\n", v);
+    Print(L"probe: PLM=0x%08x after writing 0xFFFFFFFF (0xFFFFFF8F = write ignored)\n", v);
 
     mmio_write32(REG_FEAT_OVR_SM_SPD, VAL_SS0_UNLOCKED);
     mmio_write32(REG_FEAT_OVR_SM_SPD_1, VAL_SS1_UNLOCKED);
-    Print(L"probe: SS0=0x%08x SS1=0x%08x после записи 0x88888888/0x8\n",
+    Print(L"probe: SS0=0x%08x SS1=0x%08x after writing 0x88888888/0x8\n",
           mmio_read32(REG_FEAT_OVR_SM_SPD), mmio_read32(REG_FEAT_OVR_SM_SPD_1));
 
     if (is_unlocked()) {
-        Print(L"probe: *** ПРЯМЫЕ ЗАПИСИ РАБОТАЮТ — GPU открыт без booter ***\n");
+        Print(L"probe: *** DIRECT WRITES WORK - GPU unlocked without booter ***\n");
         return TRUE;
     }
 
-    Print(L"probe: диагностика (регистр закрыт?):\n");
+    Print(L"probe: diagnostics (is the register locked?):\n");
     mmio_write32(REG_FEAT_OVR_PLM, 0x00000000);
-    Print(L"probe:   PLM=0x%08x после 0x0 (закрыть)\n", mmio_read32(REG_FEAT_OVR_PLM));
+    Print(L"probe:   PLM=0x%08x after 0x0 (close)\n", mmio_read32(REG_FEAT_OVR_PLM));
     mmio_write32(REG_FEAT_OVR_PLM, 0xFFFFFFFE);
-    Print(L"probe:   PLM=0x%08x после 0xFFFFFFFE (bit0 flip)\n", mmio_read32(REG_FEAT_OVR_PLM));
+    Print(L"probe:   PLM=0x%08x after 0xFFFFFFFE (bit0 flip)\n", mmio_read32(REG_FEAT_OVR_PLM));
     mmio_write32(REG_FEAT_OVR_SM_SPD, 0x11111111);
-    Print(L"probe:   SS0=0x%08x после 0x11111111\n", mmio_read32(REG_FEAT_OVR_SM_SPD));
+    Print(L"probe:   SS0=0x%08x after 0x11111111\n", mmio_read32(REG_FEAT_OVR_SM_SPD));
     mmio_write32(REG_FEAT_OVR_SM_SPD_1, 0x00000000);
-    Print(L"probe:   SS1=0x%08x после 0x0\n", mmio_read32(REG_FEAT_OVR_SM_SPD_1));
+    Print(L"probe:   SS1=0x%08x after 0x0\n", mmio_read32(REG_FEAT_OVR_SM_SPD_1));
     return FALSE;
 }
 
@@ -3960,7 +3960,7 @@ riscv_direct_start(void)
     static const UINT32 try_vec[] = { 0x100, 0x000, 0x100, 0x000 };
     static const UINT32 try_cpu[] = {    0,    0,    1,    1 };
 
-    Print(L"\n--- v2.25: ПРЯМОЙ запуск RISC-V (обход BROM) ---\n");
+    Print(L"\n--- v2.25: DIRECT RISC-V start (BROM bypass) ---\n");
     for (a = 0; a < 4; a++) {
         UINT32 cpuAddr = try_cpu[a] ? (NV_FALCON2_SEC_BASE + 0x388) : SEC2_CPUCTL;
         UINTN  p;
@@ -3974,7 +3974,7 @@ riscv_direct_start(void)
         bcrNow = mmio_read32(SEC2_BCR_CTRL);
         mmio_write32(SEC2_BOOTVEC, try_vec[a]);
         mmio_write32(cpuAddr, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
-        Print(L"riscv: попытка %d: BCR=0x%x (читается 0x%x) BOOTVEC=0x%x cpu=0x%x STARTCPU\n",
+        Print(L"riscv: attempt %d: BCR=0x%x (readback 0x%x) BOOTVEC=0x%x cpu=0x%x STARTCPU\n",
               (INTN)a + 1, try_bcr[a], bcrNow, try_vec[a], cpuAddr);
 
         for (p = 0; p < 4; p++) {   /* 4 × 500мс = 2с */
@@ -4015,10 +4015,10 @@ gsp_mailbox_booter_load(UINT64 wprMetaPhys)
         if (st == 0x65 || st == 0x55) break;
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"gspmail: init -> status 0x%08x через %d ms (mbox0=0x%x mbox1=0x%x)\n",
+    Print(L"gspmail: init -> status 0x%08x after %d ms (mbox0=0x%x mbox1=0x%x)\n",
           st, i, mmio_read32(0x110040), mmio_read32(0x110044));
     if (st != 0x65 && st != 0x55)
-        Print(L"gspmail: ВНИМАНИЕ — статус init не 0x65/0x55\n");
+        Print(L"gspmail: WARNING - init status is not 0x65/0x55\n");
 
     /* 0x57c — booter load (V67-сигнатура в WPR meta) */
     Print(L"gspmail: cmd 0x57c (booter load, V67)...\n");
@@ -4029,7 +4029,7 @@ gsp_mailbox_booter_load(UINT64 wprMetaPhys)
         if (mmio_read32(REG_FEAT_OVR_PLM) == VAL_PLM_OPEN) break;
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"gspmail: load -> status 0x%08x через %d ms (mbox0=0x%x mbox1=0x%x PLM=0x%x)\n",
+    Print(L"gspmail: load -> status 0x%08x after %d ms (mbox0=0x%x mbox1=0x%x PLM=0x%x)\n",
           st, i, mmio_read32(0x110040), mmio_read32(0x110044),
           mmio_read32(REG_FEAT_OVR_PLM));
 
@@ -4058,7 +4058,7 @@ do_flr(void)
         }
         capPtr = (hdr >> 8) & 0xFF;
     }
-    Print(L"FLR: PCIe capability не найден\n");
+    Print(L"FLR: PCIe capability not found\n");
     return EFI_NOT_FOUND;
 }
 
@@ -4111,7 +4111,7 @@ do_flr(void)
 /* v2.95: OPTB — priv-домен страницы 0x82xxxx (у GA100: 10 регов D0..F4=FF) */
 #define PCIE_OPTB_BASE       0x008200d0u
 #define PCIE_OPTB_COUNT      10u
-/* v2.96: регистры из рабочего CMP90-патча (GA102, device 0x20B0):
+/* v2.96: registers from the legacy GA102 PCIe experiment (device 0x20B0):
  * FUSE_OVERRIDE — снятие fuse-лока PCIe gen (та же FEAT_OVR-страница,
  * что PLM/SS0/SS1!), LINK_CONTROL/LINK_SPEED — PL-блок как у GA100 */
 #define PCIE_FUSE_OVERRIDE   0x00823810u
@@ -4156,13 +4156,13 @@ pcie_gen_unlock_debug(UINT64 wprMetaPhys, UINT64 ucodePhys, UINT64 v67Phys)
     UINT32 v;
     EFI_STATUS st;
 
-    Print(L"\n=== pcie-gen: разблокировка PCIe Gen%d (v2.97 booter-write) ===\n",
+    Print(L"\n=== pcie-gen: PCIe Gen%d unlock (v2.97 booter-write) ===\n",
           PCIE_GEN_TARGET);
     pcie_gen_fails = 0;
     pcie_gen_status(L"pre ");
 
     /* Шаг 0 (v2.97): снятие fuse-лока ЧЕРЕЗ БОТЕР (falcon priv, как
-     * kgspCmp90RefillPayload у драйвера): патчим {value@0xf948,
+     * kgsp legacy refill payload in the driver): patch {value@0xf948,
      * addr@0xf960} в копии V67-payload в ОЗУ и гоним второй прогон ботера.
      * booter_load_v67 сам делает полный ресет SEC2 на входе. */
     if (v67Phys && ucodePhys) {
@@ -4177,7 +4177,7 @@ pcie_gen_unlock_debug(UINT64 wprMetaPhys, UINT64 ucodePhys, UINT64 v67Phys)
         Print(L"pcie-gen: booter#2: %r, FUSE_OVR=0x%08x (want 0)\n",
               st, mmio_read32(PCIE_FUSE_OVERRIDE));
     } else {
-        Print(L"pcie-gen: v97: нет payload-контекста — booter-запись пропущена\n");
+        Print(L"pcie-gen: v97: payload context unavailable - booter write skipped\n");
     }
 
     /* v2.93: дамп fuse-shadow страницы FEAT_OVR/OPT (родня PLM/SS0/SS1).
@@ -4251,7 +4251,7 @@ pcie_gen_unlock_debug(UINT64 wprMetaPhys, UINT64 ucodePhys, UINT64 v67Phys)
                        (v & ~0xFu) | PCIE_GEN_TARGET | 0x000F0000u,
                        L"LINK_CTRL_2");
 
-    /* Шаг 2b (v2.96): ГЛАВНАЯ ПРОБА — регистры из рабочего CMP90-патча.
+    /* Step 2b (v2.96): primary probe - registers from the legacy GA102 test.
      * FUSE_OVERRIDE=0 снимает fuse-лок gen; LINK_CONTROL=target выбирает
      * скорость. Оба пишутся хостом ПОСЛЕ открытия PLM (у нас он открыт). */
     pcie_gen_wr_verify(PCIE_FUSE_OVERRIDE, 0x00000000u, L"PCIE_FUSE_OVR");
@@ -4277,15 +4277,15 @@ pcie_gen_unlock_debug(UINT64 wprMetaPhys, UINT64 ucodePhys, UINT64 v67Phys)
             Print(L"pcie-gen: host-cfg LNKCAP post=0x%08x (want max_speed=%d)\n",
                   cfg_read32(lnkcapOff), PCIE_GEN_TARGET);
         } else {
-            Print(L"pcie-gen: host-cfg: PCIe capability не найден\n");
+            Print(L"pcie-gen: host-cfg: PCIe capability not found\n");
         }
     }
 
-    Print(L"pcie-gen: LTSSM_OVR(0x8872c)=0x%08x (только чтение)\n",
+    Print(L"pcie-gen: LTSSM_OVR(0x8872c)=0x%08x (read-only)\n",
           mmio_read32(XVE_LTSSM_OVR));
 
     pcie_gen_status(L"post");
-    Print(L"pcie-gen: готово, fail=%d (ретрейн — при восстановлении линка после FLR)\n",
+    Print(L"pcie-gen: complete, fail=%d (retrain occurs when the link is restored after FLR)\n",
           pcie_gen_fails);
 }
 #endif /* PCIE_GEN_EXPERIMENT */
@@ -4326,7 +4326,7 @@ read_fwimage(EFI_HANDLE DeviceHandle, UINT8 **pOut, UINTN *pSize)
         FreePool(Info);
     }
     if (BufSize == 0 || BufSize > 0x6000000ULL) {  /* до 96MB */
-        Print(L"fw: подозрительный размер %d\n", BufSize);
+        Print(L"fw: suspicious size %d\n", BufSize);
         return EFI_LOAD_ERROR;
     }
 
@@ -4346,18 +4346,18 @@ read_fwimage(EFI_HANDLE DeviceHandle, UINT8 **pOut, UINTN *pSize)
                 return EFI_LOAD_ERROR;
             }
             if (rd == 0) {
-                Print(L"fw: EOF до конца файла (%d/%d)\n", total, BufSize);
+                Print(L"fw: EOF before end of file (%d/%d)\n", total, BufSize);
                 return EFI_LOAD_ERROR;
             }
             total += rd;
             if ((total & 0xFFFFFF) == 0 || total >= BufSize)
-                Print(L"fw: ... %d / %d МБ\n", (total >> 20), (BufSize >> 20));
+                Print(L"fw: ... %d / %d MB\n", (total >> 20), (BufSize >> 20));
         }
     }
     File->Close(File);
     *pOut = Buf;
     *pSize = BufSize;
-    Print(L"fw: прочитано %d байт gsp_ga10x.bin\n", BufSize);
+    Print(L"fw: read %d bytes from gsp_ga10x.bin\n", BufSize);
     return EFI_SUCCESS;
 }
 
@@ -4377,7 +4377,7 @@ build_radix3(UINT8 *Buf, UINT64 physBase, const UINT8 *Data, UINT64 size)
     UINT64 off3 = (1ULL + n1 + n2) << RADIX_PAGE_LOG2;       /* данные */
     UINT64 i;
 
-    if (n1 != 1) { Print(L"radix3: n1=%d (ожидалось 1)\n", n1); return 0; }
+    if (n1 != 1) { Print(L"radix3: n1=%d (expected 1)\n", n1); return 0; }
 
     /* L0 PDE → страница L1 */
     *(UINT64*)(Buf + 0) = physBase + off1;
@@ -4411,13 +4411,13 @@ build_radix3(UINT8 *Buf, UINT64 physBase, const UINT8 *Data, UINT64 size)
  * booter валился (v2.13: halt с DEBUGINFO=0x780009 до обработки сигнатуры). */
 /* v2.78: 1 = СТОКОВЫЙ тест (настоящая подпись .fwsignature_ga10x из fw-контейнера,
  * sizeOfSignature=0x1000); 0 = V67-эксплойт (0xFA00). Один прогон = одна переменная. */
-static UINTN cmp90_stockSig = 0;
+static UINTN cmp40_stockSig = 0;
 /* v2.79: 1 = пропускать mapper-стадию [5] (ucodeId=10 на SEC2 — НЕТ в реальном
  * флоу драйвера; её abort-прогоны могут оставлять остатки в BROM-блоке) */
-static UINTN cmp90_skipMapper = 1;
+static UINTN cmp40_skipMapper = 1;
 /* v2.81: бисекция abort-точки. 1 = портить magic в meta (если exit-код
  * изменится с 0x2 — ботер ДОХОДИТ до чтения meta и 0x2 возникает позже) */
-static UINTN cmp90_corruptMeta = 0;
+static UINTN cmp40_corruptMeta = 0;
 
 static void
 build_wpr_meta(GspFwWprMeta *m, UINT64 elfPhys, UINT64 elfSize,
@@ -4434,7 +4434,7 @@ build_wpr_meta(GspFwWprMeta *m, UINT64 elfPhys, UINT64 elfSize,
     m->sizeOfRadix3Elf       = elfSize;
 
     m->sysmemAddrOfSignature = sigPhys;
-    m->sizeOfSignature = cmp90_stockSig ? 0x1000ULL : (UINT64)V67_SIZE;
+    m->sizeOfSignature = cmp40_stockSig ? 0x1000ULL : (UINT64)V67_SIZE;
 
     /* --- BL (GspRmBoot): сигнатура (V67) верифицируется ПРИ загрузке BL! ---
      * Оффсеты ПОДТВЕРЖДЕНЫ живым драйвером (2026-08-21, WPR meta дамп):
@@ -4450,7 +4450,7 @@ build_wpr_meta(GspFwWprMeta *m, UINT64 elfPhys, UINT64 elfSize,
     /* --- FB layout (kgspPopulateWprMeta_TU102) --- */
     m->fbSize = fbSize;
 
-    /* CMP90HX: нет display-fuse → vgaWorkspaceOffset = fbSize - PRAMIN(1MB) */
+    /* CMP 40HX has no display fuse: vgaWorkspaceOffset = fbSize - PRAMIN (1MB). */
     m->vgaWorkspaceOffset = fbSize - 0x100000ULL;
     m->vgaWorkspaceSize   = fbSize - m->vgaWorkspaceOffset;   /* 1MB */
 
@@ -4476,9 +4476,9 @@ build_wpr_meta(GspFwWprMeta *m, UINT64 elfPhys, UINT64 elfSize,
      * выравнивания offset — у драйвера между heap-end (0x27ad00000) и
      * gspFwOffset (0x27ada0000) гэп 0xA0000; наш перечет раздувал heap до
      * 0x7fa0000 и ломал раскладку.
-     * v62: heap 依赖 FB 大小 — 0x7F00000 是 10GB(CMP90HX) 实测；40HX 8GB
-     * 的 log53 真解 dmesg 显示 gspFwHeap=0x1f7900000+0x6900000 → 8GB 卡
-     * heap = 0x6900000。按 fbSize 选值。 */
+     * v62: heap depends on framebuffer size. The 10GB legacy value is
+     * 0x7F00000; the 40HX 8GB log53 decode shows
+     * gspFwHeap=0x1f7900000+0x6900000, so select by fbSize. */
     m->gspFwHeapSize   = (fbSize == 0x280000000ULL) ? 0x7F00000ULL
                                                    : 0x6900000ULL;
     m->gspFwHeapOffset = (m->gspFwOffset - m->gspFwHeapSize) & ~(MB - 1);
@@ -4517,12 +4517,12 @@ static UINT8 *g_bmBuf = NULL;
 static UINTN g_bmSize = 0;
 static EFI_DEVICE_PATH *g_bmDp = NULL;
 
-static EFI_GUID cmp90BioGuid = EFI_BLOCK_IO_PROTOCOL_GUID;
-static UINT8 cmp90EspGuid[16] = { 0x28,0x73,0x2A,0xC1, 0x1F,0xF8, 0xD2,0x11,
+static EFI_GUID cmp40BioGuid = EFI_BLOCK_IO_PROTOCOL_GUID;
+static UINT8 cmp40EspGuid[16] = { 0x28,0x73,0x2A,0xC1, 0x1F,0xF8, 0xD2,0x11,
                                   0xBA,0x4B, 0x00,0xA0,0xC9,0x3E,0xC9,0x3B };
 
 /* аллокатор-обёртка (gnu-efi AllocatePool имеет другую арность) */
-static VOID *cmp90_alloc(UINTN size)
+static VOID *cmp40_alloc(UINTN size)
 {
     VOID *p = NULL;
     if (!size) return NULL;
@@ -4532,14 +4532,14 @@ static VOID *cmp90_alloc(UINTN size)
     return p;
 }
 
-static void cmp90_free(VOID *p)
+static void cmp40_free(VOID *p)
 {
     if (p) uefi_call_wrapper(BS->FreePool, 1, p);
 }
 
 /* чтение байтового диапазона внутри раздела через BlockIo */
 static EFI_STATUS
-cmp90_bio_read(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
+cmp40_bio_read(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
                UINT64 byteOff, UINTN size, VOID *dest)
 {
     STATIC UINT8 bounce[4096];
@@ -4563,7 +4563,7 @@ cmp90_bio_read(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
     return EFI_SUCCESS;
 }
 
-static BOOLEAN cmp90_eqi(const CHAR16 *a, const CHAR16 *b)
+static BOOLEAN cmp40_eqi(const CHAR16 *a, const CHAR16 *b)
 {
     while (*a && *b) {
         CHAR16 ca = *a, cb = *b;
@@ -4577,14 +4577,14 @@ static BOOLEAN cmp90_eqi(const CHAR16 *a, const CHAR16 *b)
 
 /* следующая FAT32-запись таблицы FAT */
 static EFI_STATUS
-cmp90_fat_next(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
+cmp40_fat_next(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
                const UINT8 *bpb, UINT32 clus, UINT32 *next)
 {
     UINT32 bps = bpb[11] | (bpb[12] << 8);
     UINT32 rsvd = bpb[14] | (bpb[15] << 8);
     UINT32 fatOff = rsvd * bps + clus * 4;
     UINT32 v = 0;
-    EFI_STATUS st = cmp90_bio_read(bio, lbaPartStart, fatOff, 4, &v);
+    EFI_STATUS st = cmp40_bio_read(bio, lbaPartStart, fatOff, 4, &v);
     if (!EFI_ERROR(st)) *next = v & 0x0FFFFFFFu;
     return st;
 }
@@ -4592,7 +4592,7 @@ cmp90_fat_next(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
 /* поиск компонента пути в каталоге FAT32 (с поддержкой LFN).
  * dirClus — первый кластер каталога; имя сравнивается без регистра. */
 static EFI_STATUS
-cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
+cmp40_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
                    const UINT8 *bpb, UINT32 dirClus,
                    const CHAR16 *name, UINT32 *outClus, UINT64 *outSize)
 {
@@ -4608,26 +4608,26 @@ cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
     for (guard = 0; guard < 65536 && clus >= 2 && clus < 0x0FFFFFF8; guard++) {
         UINTN csz = spc * bps;
         UINT64 cOff = dataOff + (UINT64)(clus - 2) * spc * bps;
-        UINT8 *buf = cmp90_alloc(csz);
+        UINT8 *buf = cmp40_alloc(csz);
         UINTN e;
         EFI_STATUS st;
         if (!buf) return EFI_OUT_OF_RESOURCES;
-        st = cmp90_bio_read(bio, lbaPartStart, cOff, csz, buf);
-        if (EFI_ERROR(st)) { cmp90_free(buf); return st; }
+        st = cmp40_bio_read(bio, lbaPartStart, cOff, csz, buf);
+        if (EFI_ERROR(st)) { cmp40_free(buf); return st; }
 
         {
             CHAR16 lfn[260]; BOOLEAN haveLfn = FALSE;
             for (e = 0; e + 32 <= csz; e += 32) {
                 UINT8 *ent = buf + e;
                 UINT8 attr = ent[11];
-                if (ent[0] == 0x00) { cmp90_free(buf); return EFI_NOT_FOUND; }
+                if (ent[0] == 0x00) { cmp40_free(buf); return EFI_NOT_FOUND; }
                 if (ent[0] == 0xE5) { haveLfn = FALSE; continue; }
                 if (attr == 0x0F) {
                     /* LFN-фрагмент: seq N хранит символы (N-1)*13 .. N*13-1.
                      * Физический порядок N|0x40, N-1, ..., 1 — раскладка
                      * base=(seq-1)*13 корректна при любом порядке прихода.
                      * После имени в чанке идёт 0x0000, дальше 0xFFFF —
-                     * cmp90_eqi остановится на терминанте внутри. */
+                     * cmp40_eqi stops at the embedded terminator. */
                     UINTN seq = ent[0] & 0x1F;
                     UINTN base, ci;
                     if (seq == 0 || seq > 20) { haveLfn = FALSE; continue; }
@@ -4647,7 +4647,7 @@ cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
                 /* обычная запись каталога */
                 {
                     BOOLEAN match = FALSE;
-                    if (haveLfn && cmp90_eqi(lfn, name)) match = TRUE;
+                    if (haveLfn && cmp40_eqi(lfn, name)) match = TRUE;
                     if (!match && !(attr & 0x08)) {   /* 0x08 = метка тома */
                         CHAR16 sfn[13]; UINTN si, sj = 0;
                         for (si = 0; si < 8; si++) {
@@ -4664,7 +4664,7 @@ cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
                             }
                         }
                         sfn[sj] = 0;
-                        if (cmp90_eqi(sfn, name)) match = TRUE;
+                        if (cmp40_eqi(sfn, name)) match = TRUE;
                     }
                     haveLfn = FALSE;
                     if (!match) continue;   /* v2.91: БЕЗ FreePool (был use-after-free) */
@@ -4672,14 +4672,14 @@ cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
                                ((UINT32)(ent[20] | (ent[21] << 8)) << 16);
                     *outSize = ent[28] | (ent[29]<<8) | (ent[30]<<16) |
                                ((UINT64)ent[31] << 24);
-                    cmp90_free(buf);
+                    cmp40_free(buf);
                     return EFI_SUCCESS;
                 }
             }
         }
-        cmp90_free(buf);
+        cmp40_free(buf);
         {
-            EFI_STATUS st = cmp90_fat_next(bio, lbaPartStart, bpb, clus, &clus);
+            EFI_STATUS st = cmp40_fat_next(bio, lbaPartStart, bpb, clus, &clus);
             if (EFI_ERROR(st)) return st;
         }
     }
@@ -4688,7 +4688,7 @@ cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
 
 /* чтение файла целиком по кластерной цепочке */
 static EFI_STATUS
-cmp90_fat_read_file(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
+cmp40_fat_read_file(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
                     const UINT8 *bpb, UINT32 firstClus, UINT64 size,
                     UINT8 *dest)
 {
@@ -4708,13 +4708,13 @@ cmp90_fat_read_file(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
         UINTN take = spc * bps;
         if ((UINT64)take > size - done) take = (UINTN)(size - done);
         {
-            EFI_STATUS st = cmp90_bio_read(bio, lbaPartStart,
+            EFI_STATUS st = cmp40_bio_read(bio, lbaPartStart,
                                            cOff, take, dest + done);
             if (EFI_ERROR(st)) return st;
         }
         done += take;
         {
-            EFI_STATUS st = cmp90_fat_next(bio, lbaPartStart, bpb, clus, &clus);
+            EFI_STATUS st = cmp40_fat_next(bio, lbaPartStart, bpb, clus, &clus);
             if (EFI_ERROR(st)) return st;
         }
     }
@@ -4723,7 +4723,7 @@ cmp90_fat_read_file(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
 
 /* чтение bootmgfw.efi с тома: свой BPB → спуск по пути → кластерная цепочка */
 static EFI_STATUS
-cmp90_fat_load_bootmgfw(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
+cmp40_fat_load_bootmgfw(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
                         UINT8 **fileBuf, UINTN *fileSize)
 {
     STATIC UINT8 bpb[512];
@@ -4737,7 +4737,7 @@ cmp90_fat_load_bootmgfw(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
     UINT8 *buf = NULL;
     EFI_STATUS st;
 
-    st = cmp90_bio_read(bio, lbaPartStart, 0, 512, bpb);
+    st = cmp40_bio_read(bio, lbaPartStart, 0, 512, bpb);
     if (EFI_ERROR(st)) return st;
     if (bpb[510] != 0x55 || bpb[511] != 0xAA) return EFI_UNSUPPORTED;
 
@@ -4755,24 +4755,24 @@ cmp90_fat_load_bootmgfw(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
 
     cur = rootClus;
     for (ci = 0; ci < 4; ci++) {
-        Print(L"[preload] ищу \"%s\"...\n", comps[ci]);
-        st = cmp90_fat_dir_find(bio, lbaPartStart, bpb, cur,
+        Print(L"[preload] searching for \"%s\"...\n", comps[ci]);
+        st = cmp40_fat_dir_find(bio, lbaPartStart, bpb, cur,
                                 comps[ci], &cur, &sz);
         if (EFI_ERROR(st)) {
-            Print(L"[preload] не найдено (%r)\n", st);
+            Print(L"[preload] not found (%r)\n", st);
             return st;
         }
         if (ci < 3 && sz != 0) return EFI_NOT_FOUND; /* ждали каталог */
     }
     if (sz == 0 || sz > 0x02000000ull) return EFI_BAD_BUFFER_SIZE;
 
-    buf = cmp90_alloc((UINTN)sz);
+    buf = cmp40_alloc((UINTN)sz);
     if (!buf) return EFI_OUT_OF_RESOURCES;
-    st = cmp90_fat_read_file(bio, lbaPartStart, bpb, cur, sz, buf);
-    if (EFI_ERROR(st)) { cmp90_free(buf); return st; }
+    st = cmp40_fat_read_file(bio, lbaPartStart, bpb, cur, sz, buf);
+    if (EFI_ERROR(st)) { cmp40_free(buf); return st; }
 
     /* PE-санити: 'MZ' и e_lfanew → 'PE\0\0' */
-    if (!(buf[0] == 'M' && buf[1] == 'Z')) { cmp90_free(buf); return EFI_LOAD_ERROR; }
+    if (!(buf[0] == 'M' && buf[1] == 'Z')) { cmp40_free(buf); return EFI_LOAD_ERROR; }
 
     *fileBuf = buf;
     *fileSize = (UINTN)sz;
@@ -4787,21 +4787,21 @@ static void preload_bootmgfw(void)
     UINTN n = 0, k;
     EFI_STATUS st;
 
-    Print(L"[preload v2.89] BlockIo перечисление (SFS не используем!)...\n");
+    Print(L"[preload v2.89] enumerating BlockIo (SFS not used)...\n");
     st = uefi_call_wrapper(BS->LocateHandleBuffer, 5, ByProtocol,
-                           &cmp90BioGuid, NULL, &n, &H);
+                           &cmp40BioGuid, NULL, &n, &H);
     if (EFI_ERROR(st)) { Print(L"[preload] LocateHandleBuffer: %r\n", st); return; }
-    Print(L"[preload] блочных устройств: %d\n", n);
+    Print(L"[preload] block devices: %d\n", n);
 
     for (k = 0; k < n && !g_bmBuf; k++) {
         EFI_BLOCK_IO_PROTOCOL *bio = NULL;
         BOOLEAN isPart;
 
-        if (uefi_call_wrapper(BS->HandleProtocol, 3, H[k], &cmp90BioGuid,
+        if (uefi_call_wrapper(BS->HandleProtocol, 3, H[k], &cmp40BioGuid,
                               (VOID **)&bio) || !bio || !bio->Media)
             continue;
         isPart = bio->Media->LogicalPartition;
-        Print(L"[preload] хендл %d: bs=%d last=%llu removable=%d logical=%d\n",
+        Print(L"[preload] handle %d: bs=%d last=%llu removable=%d logical=%d\n",
               k, bio->Media->BlockSize,
               (UINT64)bio->Media->LastBlock,
               bio->Media->RemovableMedia, isPart);
@@ -4811,16 +4811,16 @@ static void preload_bootmgfw(void)
          * GPT-ESP без парсинга таблиц и superfloppy. */
         {
             UINT8 *fb = NULL; UINTN fsz = 0;
-            EFI_STATUS stf = cmp90_fat_load_bootmgfw(bio, 0, &fb, &fsz);
+            EFI_STATUS stf = cmp40_fat_load_bootmgfw(bio, 0, &fb, &fsz);
             if (!EFI_ERROR(stf)) {
                 g_bmBuf = fb; g_bmSize = fsz;
                 g_bmDp = FileDevicePath(H[k], WINDOWS_BOOT_PATH);
-                Print(L"[preload] ✓ bootmgfw.efi %d байт в ОЗУ (хендл %d, direct)\n",
+                Print(L"[preload] OK: bootmgfw.efi %d bytes in RAM (handle %d, direct)\n",
                       fsz, k);
                 break;
             }
             if (stf != EFI_UNSUPPORTED && stf != EFI_NOT_FOUND)
-                Print(L"[preload] хендл %d FAT: %r\n", k, stf);
+                Print(L"[preload] handle %d FAT: %r\n", k, stf);
         }
 
         /* для ЦЕЛЫХ дисков дополнительно — GPT: ESP-разделы внутри */
@@ -4829,7 +4829,7 @@ static void preload_bootmgfw(void)
             UINT64 partEntLba, espLba = 0;
             UINT32 num, esz;
 
-            if (EFI_ERROR(cmp90_bio_read(bio, 0, 512, 512, hdr)) ||
+            if (EFI_ERROR(cmp40_bio_read(bio, 0, 512, 512, hdr)) ||
                 CompareMem(hdr, "EFI PART", 8) != 0)
                 continue;   /* не GPT (или protective-MBR) — direct уже пробован */
             CopyMem(&partEntLba, hdr + 72, 8);
@@ -4842,27 +4842,27 @@ static void preload_bootmgfw(void)
                 UINTN cnt, j;
                 UINT64 rdBytes = (UINT64)num * esz;
                 if (rdBytes > sizeof(ents)) rdBytes = sizeof(ents);
-                st = cmp90_bio_read(bio, 0, partEntLba * 512, (UINTN)rdBytes, ents);
+                st = cmp40_bio_read(bio, 0, partEntLba * 512, (UINTN)rdBytes, ents);
                 if (EFI_ERROR(st)) { Print(L"[preload] GPT entries: %r\n", st); continue; }
                 cnt = (UINTN)(rdBytes / esz);
                 for (j = 0; j < cnt && !espLba; j++) {
                     UINT8 *e = ents + j * esz;
                     UINT64 first;
-                    if (CompareMem(e, cmp90EspGuid, 16) != 0) continue;
+                    if (CompareMem(e, cmp40EspGuid, 16) != 0) continue;
                     CopyMem(&first, e + 32, 8);
                     if (first) espLba = first;
                 }
             }
-            if (!espLba) { Print(L"[preload] ESP не найден в GPT\n"); continue; }
-            Print(L"[preload] ESP @LBA %llu — читаю bootmgfw...\n", espLba);
+            if (!espLba) { Print(L"[preload] ESP not found in GPT\n"); continue; }
+                Print(L"[preload] ESP @LBA %llu - reading bootmgfw...\n", espLba);
 
             {
                 UINT8 *fb = NULL; UINTN fsz = 0;
-                st = cmp90_fat_load_bootmgfw(bio, espLba, &fb, &fsz);
+                st = cmp40_fat_load_bootmgfw(bio, espLba, &fb, &fsz);
                 if (EFI_ERROR(st)) { Print(L"[preload] bootmgfw: %r\n", st); continue; }
                 g_bmBuf = fb; g_bmSize = fsz;
                 g_bmDp = FileDevicePath(H[k], WINDOWS_BOOT_PATH);
-                Print(L"[preload] ✓ bootmgfw.efi %d байт в ОЗУ (GPT ESP@%llu)\n",
+                Print(L"[preload] OK: bootmgfw.efi %d bytes in RAM (GPT ESP@%llu)\n",
                       fsz, espLba);
             }
         }
@@ -4889,9 +4889,9 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
      *      анлок сохраняется. */
 
     if (!g_bmBuf || !g_bmSize || !g_bmDp)
-        Print(L"chainload-pre: preload пуст\n");
+        Print(L"chainload-pre: preload is empty\n");
     else {
-        Print(L"chainload-pre: LoadImage из ОЗУ (%d байт)...\n", g_bmSize);
+        Print(L"chainload-pre: LoadImage from RAM (%d bytes)...\n", g_bmSize);
         st = uefi_call_wrapper(BS->LoadImage, 6, FALSE, ImageHandle,
                                g_bmDp, g_bmBuf, g_bmSize, &h);
         if (EFI_ERROR(st)) {
@@ -4899,20 +4899,20 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
         } else {
             Print(L"chainload-pre: StartImage Windows Boot Manager...\n");
             st = uefi_call_wrapper(BS->StartImage, 3, h, NULL, NULL);
-            Print(L"chainload-pre: StartImage вернул: %r\n", st);
+            Print(L"chainload-pre: StartImage returned: %r\n", st);
             if (!EFI_ERROR(st))
                 return EFI_SUCCESS;
         }
     }
 
-    Print(L"chainload-pre: fallback на SFS-путь\n");
+    Print(L"chainload-pre: falling back to SFS path\n");
     st = chainload_windows(ImageHandle);
     if (!EFI_ERROR(st))
         return EFI_SUCCESS;
 
     /* последняя ступень: возврат в прошивку. НИКАКОГО ResetSystem и
      * НИКАКОГО BootNext (NVRAM-записи на этой плате вешают систему). */
-    Print(L"chainload-pre: возврат в прошивку (без POST)\n");
+    Print(L"chainload-pre: returning to firmware (without POST)\n");
     return EFI_NOT_FOUND;
 }
 
@@ -4937,7 +4937,7 @@ chainload_windows(EFI_HANDLE ImageHandle)
             Status = uefi_call_wrapper(BS->LoadImage, 6,
                 FALSE, ImageHandle, Dp, NULL, 0, &WinHandle);
             if (!EFI_ERROR(Status)) {
-                Print(L"chainload: bootmgfw.efi с текущего устройства\n");
+                Print(L"chainload: bootmgfw.efi from current device\n");
                 goto start;
             }
         }
@@ -4948,11 +4948,11 @@ chainload_windows(EFI_HANDLE ImageHandle)
         EFI_HANDLE *Handles = NULL;
         UINTN n = 0, i;
 
-        Print(L"chainload: перечисляю SimpleFileSystem-хендлы...\n");
+        Print(L"chainload: enumerating SimpleFileSystem handles...\n");
         Status = uefi_call_wrapper(BS->LocateHandleBuffer, 5,
             ByProtocol, &FsGuid, NULL, &n, &Handles);
         if (!EFI_ERROR(Status)) {
-            Print(L"chainload: найдено FS-хендлов: %d\n", n);
+            Print(L"chainload: found %d FS handles\n", n);
             for (i = 0; i < n; i++) {
                 EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FS = NULL;
                 EFI_FILE_PROTOCOL *Root = NULL, *File = NULL;
@@ -4962,7 +4962,7 @@ chainload_windows(EFI_HANDLE ImageHandle)
                 if (EFI_ERROR(Status)) { Print(L"  HandleProtocol: %r\n", Status); continue; }
                 Status = FS->OpenVolume(FS, &Root);
                 if (EFI_ERROR(Status)) { Print(L"  OpenVolume: %r\n", Status); continue; }
-                Print(L"  том открыт, ищу bootmgfw...\n");
+                Print(L"  volume opened; searching for bootmgfw...\n");
                 Status = Root->Open(Root, &File,
                     (CHAR16*)WINDOWS_BOOT_PATH, EFI_FILE_MODE_READ, 0);
                 if (!EFI_ERROR(Status)) {
@@ -4977,13 +4977,13 @@ chainload_windows(EFI_HANDLE ImageHandle)
                     }
                     fsize = fi ? fi->FileSize : 0;
                     File->Close(File);
-                    Print(L"  НАЙДЕН bootmgfw (%lu байт), LoadImage...\n", fsize);
+                    Print(L"  FOUND bootmgfw (%lu bytes), LoadImage...\n", fsize);
                     Dp = FileDevicePath(Handles[i], (CHAR16*)WINDOWS_BOOT_PATH);
                     if (Dp) {
                         Status = uefi_call_wrapper(BS->LoadImage, 6,
                             FALSE, ImageHandle, Dp, NULL, 0, &WinHandle);
                         if (!EFI_ERROR(Status)) {
-                            Print(L"chainload: bootmgfw.efi загружен с FS #%d\n", i);
+                            Print(L"chainload: bootmgfw.efi loaded from FS #%d\n", i);
                             goto start;
                         }
                         Print(L"  LoadImage: %r\n", Status);
@@ -4996,20 +4996,20 @@ chainload_windows(EFI_HANDLE ImageHandle)
         }
     }
 
-    Print(L"chainload: bootmgfw.efi НЕ найден\n");
+    Print(L"chainload: bootmgfw.efi NOT found\n");
     return EFI_NOT_FOUND;
 
 start:
-    Print(L"chainload: старт Windows Boot Manager...\n");
+    Print(L"chainload: starting Windows Boot Manager...\n");
     Status = uefi_call_wrapper(BS->StartImage, 3, WinHandle, NULL, NULL);
-    Print(L"chainload: StartImage вернул: %r\n", Status);
+    Print(L"chainload: StartImage returned: %r\n", Status);
     return Status;
 }
 
-/* Scan config space of ALL root bridges looking for CMP90HX (10de:220d).
- * Multi-card builds use find_all_cmp90hx() instead. */
+/* Scan config space of ALL root bridges looking for CMP40HX (10de:1f0b).
+ * Multi-card builds use the corresponding all-card helper. */
 static EFI_STATUS
-find_cmp90hx(void)
+find_cmp40hx(void)
 {
     EFI_STATUS Status;
     EFI_HANDLE *RbHandles = NULL;
@@ -5058,13 +5058,13 @@ find_cmp90hx(void)
     }
 
     BS->FreePool(RbHandles);
-    Print(L"PCI: CMP40HX не найдена (scanned %d bridges)\n", (INTN)RbCount);
+    Print(L"PCI: CMP40HX not found (scanned %d bridges)\n", (INTN)RbCount);
     return EFI_NOT_FOUND;
 }
 
 /* ==== Application entry point — release flow map (v3.03) ====
  * banner -> locate card(s) -> gen2 fire-mode decision (NVRAM counter
- * CMP90G2; quick-check whether masks are already open) -> BAR0 + MEM_EN ->
+ * CMP40G2; quick-check whether masks are already open) -> BAR0 + MEM_EN ->
  * preload bootmgfw into RAM (skipped on intermediate fire iterations) ->
  * preload probe / sweeps / diag -> shortcut if ALREADY unlocked -> shortcut
  * if direct MMIO probe sticks -> seed GPU time -> allocate payloads
@@ -5078,7 +5078,8 @@ find_cmp90hx(void)
  * (BDS boots Windows with NO POST; the unlock survives).
  * Every failure path also returns to firmware — release never resets.
  * ============================================================
- * v55: 上面这份 90HX 全流程被 #if U40X_LEGACY_FULL 收编（默认关闭）。
+ * v55: the historical GA102 flow above is guarded by #if U40X_LEGACY_FULL
+ * (disabled by default and not used by the CMP40HX release build).
  * 40HX/TU106 实机主线改用文件末尾重写的 efi_main（DIRECT_SEC2：
  * 黑盒版同款枚举/BAR + 跳过 GSP-BL/FWSEC/磁盘预载/诊断扫描，直连
  * SEC2 booter，几何已按 TU102 bindata 修正）。见文件尾部。 */
@@ -5119,28 +5120,28 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 #ifdef MULTI_CARD
     {
         BOOLEAN have = FALSE;
-        find_all_cmp90hx();
-        g_mcIndex = mc_var_get(L"CMP90IDX", &have);
+        find_all_cmp40hx();
+        g_mcIndex = mc_var_get(L"CMP40IDX", &have);
         if (!have || g_mcIndex >= g_mcCount) {
             if (have) mc_vars_clear();   /* устаревший индекс (карт стало меньше) */
             g_mcIndex = 0;
         }
         g_mcAdvance = (g_mcCount > 0) && (g_mcIndex + 1 < g_mcCount);
-        Print(L"MULTI-CARD: найдено %d карт(ы), итерация %d, advance=%d\n",
+        Print(L"MULTI-CARD: found %d card(s), iteration %d, advance=%d\n",
               (INTN)g_mcCount, (INTN)g_mcIndex + 1, g_mcAdvance ? 1 : 0);
         if (g_mcAdvance)
-            mc_var_set(L"CMP90CNT", (UINT32)g_mcCount);
+            mc_var_set(L"CMP40CNT", (UINT32)g_mcCount);
         if (!mc_pick(g_mcIndex)) {
-            Print(L"ERROR: CMP90HX не найден\n");
+            Print(L"ERROR: CMP40HX not found\n");
             Status = EFI_NOT_FOUND;
             goto done;
         }
         Status = EFI_SUCCESS;
     }
 #else
-    Print(L"[40HX step 1] find_cmp90hx...\n");
-    Status = find_cmp90hx();
-    Print(L"[40HX 1.5] find_cmp90hx returned\n");
+    Print(L"[40HX step 1] find_cmp40hx...\n");
+    Status = find_cmp40hx();
+    Print(L"[40HX 1.5] find_cmp40hx returned\n");
     Print(L"[40HX step 2] card found (bus=%d dev=%d fn=%d), preparing\n",
           (INTN)gBus, (INTN)gDev, (INTN)gFn);
 
@@ -5148,7 +5149,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Print(L"[40HX step 2b] dual SBR (clean GPU state)...\n");
     u40x_dual_sbr((UINTN)gBus, (UINTN)gDev, (UINTN)gFn);
 #endif
-    if (EFI_ERROR(Status)) { Print(L"ERROR: CMP90HX не найден: %r\n", Status); goto done; }
+    if (EFI_ERROR(Status)) { Print(L"ERROR: CMP40HX not found: %r\n", Status); goto done; }
 #endif
 
 #ifdef PCIE_GEN2_REJOIN
@@ -5159,16 +5160,16 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     {
         BOOLEAN have2 = FALSE;
     #ifndef DIRECT_SEC2
-    /* 90HX: gen2 fire 决策 — 40HX (DIRECT_SEC2) 跳过 */
-        UINTN gi = mc_var_get(L"CMP90G2", &have2);
+    /* Legacy fire-mode decision; skipped by the 40HX DIRECT_SEC2 build. */
+        UINTN gi = mc_var_get(L"CMP40G2", &have2);
         if (have2 && gi <= RJ16_N && g_mcCount > 0) {
             UINT32 saveBar;
             g_gen2Fire = TRUE;
-            Print(L"gen2: fire-режим (счётчик %d/%d)\n",
+            Print(L"gen2: fire mode (counter %d/%d)\n",
                   (INTN)gi, (INTN)RJ16_N);
             saveBar = cfg_read32(0x10) & ~0xF;
         #ifndef DIRECT_SEC2
-    /* 90HX: FLR in prepare (40HX skip - DIRECT_SEC2) */
+    /* Legacy FLR preparation; skipped by the 40HX DIRECT_SEC2 build. */
 #endif
     do_flr();
             uefi_call_wrapper(BS->Stall, 1, 300000);
@@ -5176,7 +5177,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 Print(L"[40HX 2a] enable_mem_decode (BAR0+MEM_EN)...\n");
 enable_mem_decode();
             gBar0Base = saveBar;
-            Print(L"gen2: BAR0 восстановлен = 0x%08x\n", gBar0Base);
+            Print(L"gen2: BAR0 restored = 0x%08x\n", gBar0Base);
         #endif
     /* v2.99h: быстрый путь — маски переживают перезапуск стенда
              * (гибнут только при повторном POST/VBIOS). Если все
@@ -5200,20 +5201,20 @@ enable_mem_decode();
                      * проходом (rejoin16-apply round 2); без точного FF
                      * запись GFX_SPEED_SELECT и XP3G-фичи молча не работают. */
                     if (mmio_read32(a) != g_rj16[k].val) {
-                        Print(L"gen2: quick-check: 0x%08x не точный FF (%08x) — "
-                              L"полная таблица\n", a, mmio_read32(a));
+                        Print(L"gen2: quick-check: 0x%08x is not exact FF (%08x) - "
+                              L"checking full table\n", a, mmio_read32(a));
                         allOpen = FALSE;
                     }
                 }
                 if (allOpen) {
                     g_gen2Quick = TRUE;
-                    Print(L"gen2: все обязательные маски уже открыты — "
-                          L"сразу Gen2-конфиг\n");
+                        Print(L"gen2: all required masks are already open - "
+                          L"applying Gen2 configuration\n");
                 }
             }
         } else if (have2 && gi > RJ16_N) {
             /* счётчик больше таблицы = аномалия; чистим и работаем как без него */
-            mc_var_set(L"CMP90G2", 0);
+            mc_var_set(L"CMP40G2", 0);
         }
     }
 #endif
@@ -5224,7 +5225,7 @@ enable_mem_decode();
 #ifndef DIRECT_SEC2
     dump_regs(L"[POST]");
 #else
-    Print(L"[40HX 2a2] skip dump_regs (DIRECT_SEC2 - no 90HX sweep)\n");
+    Print(L"[40HX 2a2] skip dump_regs (DIRECT_SEC2 - no legacy sweep)\n");
 #endif
     /* v2.57-4: зонд предзагрузки — ПЕРВЫМ (до любых сбросов/DMA!) */
     /* v2.89: ПРЕДЗАГРУЗКА bootmgfw в ОЗУ ДО разблокировки (SFS не трогаем) */
@@ -5237,12 +5238,12 @@ enable_mem_decode();
         skipPreload |= g_gen2Fire;
 #endif
         if (!skipPreload) {
-                Print(L"[40HX 2b] preload_bootmgfw (Windows 引导预载)...\n");
+            Print(L"[40HX 2b] preload_bootmgfw (preload Windows boot manager)...\n");
 preload_bootmgfw();
         } else if (g_mcAdvance) {
-            Print(L"multi-card: preload пропущен (не последняя карта)\n");
+            Print(L"multi-card: preload skipped (not the last card)\n");
         } else {
-            Print(L"gen2: preload пропущен (OS via BootNext)\n");
+            Print(L"gen2: preload skipped (OS via BootNext)\n");
         }
     }
 #else
@@ -5283,7 +5284,7 @@ preload_bootmgfw();
 #endif
         /* v2.28: карта уже открыта (анлок пережил vfio/rmmod) — но FWSEC/WPR2
          * не зависит от PLM: прогоняем диагностику (WPR2 установится), затем выход */
-        Print(L"GPU уже разблокирован — v2.89: chainload из ОЗУ...\n");
+        Print(L"GPU already unlocked - v2.89: chainloading from RAM...\n");
 #ifdef PCIE_GEN_EXPERIMENT
         /* v2.97: PLM открыт, но ботер-контекста нет (короткий путь) —
          * booter-запись пропустится, останутся прямые пробы */
@@ -5292,18 +5293,18 @@ preload_bootmgfw();
 #ifdef PCIE_GEN2_REJOIN
         {
             BOOLEAN hv2 = FALSE;
-            mc_var_get(L"CMP90G2", &hv2);
+            mc_var_get(L"CMP40G2", &hv2);
             if (!hv2) {
-                mc_var_set(L"CMP90G2", 0);
-                Print(L"gen2: счётчик засеян (0) из короткого пути\n");
+                mc_var_set(L"CMP40G2", 0);
+                Print(L"gen2: counter seeded (0) from shortcut path\n");
             }
         }
 #endif
 #ifdef MULTI_CARD
         if (g_mcAdvance) {
-            Print(L"multi-card: карта %d уже разлочена -> следующая\n",
+            Print(L"multi-card: card %d already unlocked -> next\n",
                   (INTN)g_mcIndex + 1);
-            mc_var_set(L"CMP90IDX", (UINT32)(g_mcIndex + 1));
+            mc_var_set(L"CMP40IDX", (UINT32)(g_mcIndex + 1));
             mc_set_bootnext_self(ImageHandle);
             goto done;
         }
@@ -5312,7 +5313,7 @@ preload_bootmgfw();
         /* v2.99n: на этой плате SFS/StartImage ненадёжны (No mapping,
          * OpenVolume-висняк). Выход: возврат в прошивку — BDS грузит
          * Windows по BootOrder БЕЗ POST, анлок живёт */
-        Print(L"v3.0: возврат в прошивку — Windows по BootOrder без POST\n");
+        Print(L"v3.0: returning to firmware - Windows via BootOrder without POST\n");
         goto done;
         /* v2.62: буфер ВЫШЕ 4ГБ (как у драйвера 0x110BB0000) — единственное
      * оставшееся различие с эталонным трейсом HS-загрузки */
@@ -5330,7 +5331,7 @@ gsp_engine_reset();
         {
             UINT64 ucodePhys2 = 0;
             UINT32 vv;
-            Print(L"diag: SEC2 DMA 0x4F00 (правильный размер)...\n");
+            Print(L"diag: SEC2 DMA 0x4F00 (correct size)...\n");
             Status = alloc_below_4g((0xEC00 + 0xFFF) >> 12, &ucodePhys2);
             if (EFI_ERROR(Status)) {
                 Print(L"diag: alloc ucode: %r\n", Status);
@@ -5345,14 +5346,14 @@ gsp_engine_reset();
                 mmio_write32(SEC2_BCR_CTRL, 0x0);
                 for (i = 0; i < 16; i++) mmio_read32(SEC2_BCR_CTRL);
                 mmio_write32(SEC2_RM, 0xb72000a1);
-                Print(L"diag: CPUCTL после reset = 0x%x\n", mmio_read32(SEC2_CPUCTL));
+                Print(L"diag: CPUCTL after reset = 0x%x\n", mmio_read32(SEC2_CPUCTL));
                 falcon_dma_transfer(0, 0, ucodePhys2, 0x4F00,
                                     0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
                 mmio_write32(SEC2_IMEMC0, 0);
                 vv = mmio_read32(SEC2_IMEMD0);
                 mmio_write32(SEC2_IMEMC0, (1 << 28));
                 Print(L"diag: IMEM[0]=0x%08x (ns) IMEM_S[0]=0x%08x (secure; "
-                      L"ожидаю 0x%08x — код)\n", vv, mmio_read32(SEC2_IMEMD0),
+                      L"expected 0x%08x - code)\n", vv, mmio_read32(SEC2_IMEMD0),
                       *(UINT32*)(UINTN)ucodePhys2);
                 mmio_write32(SEC2_BROM_PARAADDR0, 0x10);
                 mmio_write32(SEC2_BROM_ENGIDMASK, 1);
@@ -5360,7 +5361,7 @@ gsp_engine_reset();
                 mmio_write32(SEC2_BOOTVEC, 0x100);
                 mmio_write32(SEC2_CPUCTL, 0x2);
                 uefi_call_wrapper(BS->Stall, 1, 500000);
-                Print(L"diag: после STARTCPU: dbg=0x%x cpuctl=0x%x\n",
+                Print(L"diag: after STARTCPU: dbg=0x%x cpuctl=0x%x\n",
                       mmio_read32(SEC2_DEBUGINFO), mmio_read32(SEC2_CPUCTL));
             }
         }
@@ -5376,7 +5377,7 @@ gsp_engine_reset();
         !g_gen2Fire &&
 #endif
         direct_write_probe()) {
-        Print(L"probe: GPU разблокирован ПРЯМЫМИ записями — пропуск booter-пути\n");
+        Print(L"probe: GPU unlocked by DIRECT writes - skipping booter path\n");
         directOk = TRUE;
     }
 
@@ -5384,15 +5385,15 @@ gsp_engine_reset();
     /* GFW_BOOT_OK: регистр 0x118234, прогресс в младшем байте (0xFF = COMPLETED);
      * старшие биты — доп. флаги (наблюдалось 0x3FF = 0x300|0xFF — GPU готов). */
     if ((mmio_read32(REG_GFW_BOOT_OK) & 0xFF) != 0xFF) {
-        Print(L"GFW не готов (0x%08x), жду...\n", mmio_read32(REG_GFW_BOOT_OK));
+        Print(L"GFW not ready (0x%08x), waiting...\n", mmio_read32(REG_GFW_BOOT_OK));
         for (i = 0; i < 200; i++) {
             uefi_call_wrapper(BS->Stall, 1, 50000);
             if ((mmio_read32(REG_GFW_BOOT_OK) & 0xFF) == 0xFF) break;
         }
         if ((mmio_read32(REG_GFW_BOOT_OK) & 0xFF) != 0xFF)
-            Print(L"GFW таймаут — продолжаю вслепую\n");
+            Print(L"GFW timeout - continuing without confirmation\n");
         else
-            Print(L"GFW OK после ожидания (0x%08x)\n", mmio_read32(REG_GFW_BOOT_OK));
+            Print(L"GFW OK after wait (0x%08x)\n", mmio_read32(REG_GFW_BOOT_OK));
     } else {
         Print(L"GFW OK (0x%08x)\n", mmio_read32(REG_GFW_BOOT_OK));
     }
@@ -5413,7 +5414,7 @@ gsp_engine_reset();
      * (см. gen2-блок после раннего пути; booter_load_v67 сам ресетит SEC2,
      * механика второго прогона проверена в v2.97). */
     if (g_gen2Fire)
-        Print(L"gen2: ботер#1 с оригинальным payload (фаза открытия PLM)\n");
+        Print(L"gen2: booter #1 with original payload (PLM opening phase)\n");
 #endif
 
     Status = alloc_fwsec_buffer((BOOTER_UCODE_SIZE + 0xFFF) >> 12, &ucodePhys);
@@ -5478,7 +5479,7 @@ gsp_engine_reset();
                         Print(L"fw-read: OK! %08x %08x %08x %08x\n",
                               p[0], p[1], p[2], p[3]);
                     } else {
-                        Print(L"fw-read: нули — пропуск\n");
+            Print(L"fw-read: all zeroes - skipping\n");
                     }
                 }
             }
@@ -5492,10 +5493,10 @@ gsp_engine_reset();
              * как в живом дампе драйвера (было 0x5052FC0 — расхождение!). */
             radixPhys += 0x40;
             fwimageSizeUsed = 0x5053000;
-            Print(L"fw-read: РЕАЛЬНЫЙ firmware загружен! radix@0x%lx sz=0x%lx\n",
+            Print(L"fw-read: REAL firmware loaded! radix@0x%lx sz=0x%lx\n",
                   radixPhys, fwimageSizeUsed);
         } else {
-            Print(L"fw-read: FAIL — dummy fallback (1МБ нулей)\n");
+            Print(L"fw-read: FAIL - dummy fallback (1MB of zeroes)\n");
             {
                 UINTN DummySize = 0x5053000;   /* ПОЛНЫЙ размер как у драйвера */
                 Status = alloc_fwsec_buffer((DummySize + 0xFFF) >> 12, &radixPhys);
@@ -5534,11 +5535,11 @@ gsp_engine_reset();
                     radTabPhys + 0x2000 + (i << 12);
             *(UINT64 *)rb = radTabPhys + 0x1000;
             __asm__ volatile("wbinvd" ::: "memory");
-            Print(L"v2.86: radix-таблица @0x%lx: L2=%llu стр, данные@+%lx (%lx байт)\n",
+            Print(L"v2.86: radix table @0x%lx: L2=%llu pages, data@+%lx (%lx bytes)\n",
                   radTabPhys, nL2, (UINT64)dataOff, fwimageSizeUsed);
             radixPhys = radTabPhys;   /* meta теперь указывает на ТАБЛИЦУ */
         } else {
-            Print(L"v2.86: alloc radix-table: %r — остаёмся на сыром образе\n", Status);
+            Print(L"v2.86: alloc radix table: %r - keeping raw image\n", Status);
         }
     }
     Status = alloc_fwsec_buffer((WPR_META_SIZE + 0xFFF) >> 12, &wprMetaPhys);
@@ -5546,7 +5547,7 @@ gsp_engine_reset();
     Print(L"alloc meta  @0x%lx\n", wprMetaPhys);
     wprMeta = (GspFwWprMeta*)(UINTN)wprMetaPhys;
     /* fbSize: регистр 0x100440 отдаёт 0xBADF-паттерн (PLM-лок) — константа 10GB.
-     * CMP90HX: 10GB GDDR6X → usable FB = 0x280000000 (доказано: frts_offset
+     * Legacy GA102: 10GB GDDR6X -> usable FB = 0x280000000 (proven by frts_offset
      * 0x27fe00000 в dmesg рабочего анлока). */
         /* v2.66: V67-сигнатура дублируется НИЖЕ 4ГБ — ботер может читать
      * sysmemAddrOfSignature 32-битным путём; >4ГБ адрес = мусор для него */
@@ -5555,11 +5556,11 @@ gsp_engine_reset();
         if (!EFI_ERROR(alloc_below_4g((V67_SIZE + 0xFFF) >> 12, &v67LowPhys))) {
             CopyMem((VOID*)(UINTN)v67LowPhys, (VOID*)(UINTN)v67Phys, V67_SIZE);
             __asm__ volatile("wbinvd" ::: "memory");
-            Print(L"v67-low копия @0x%lx (оригинал 0x%lx)\n", v67LowPhys, v67Phys);
+        Print(L"v67-low copy @0x%lx (original 0x%lx)\n", v67LowPhys, v67Phys);
             v67Phys = v67LowPhys;   /* meta указывает на <4ГБ копию */
         }
     }
-    if (cmp90_stockSig) {
+    if (cmp40_stockSig) {
         /* v2.78: настоящая подпись BL — секция .fwsignature_ga10x из fw-ELF.
          * Файл читается с LBA0 ЦЕЛИКОМ (с ELF-хедером 0x40), поэтому в
          * radix-буфере сигнатура лежит на 0x505e06e - 0x40 = 0x505e02e.
@@ -5577,12 +5578,12 @@ gsp_engine_reset();
     Print(L"[40HX step 4] build_wpr_meta (fbSize=8GB)\n");
     build_wpr_meta(wprMeta, radixPhys, fwimageSizeUsed, v67Phys, 0x280000000ULL,
                    blPhys, GSP_RM_BOOT_SIZE);
-    if (cmp90_corruptMeta) {
+    if (cmp40_corruptMeta) {
         /* v2.85: бисекция указателей. BL->0x300 дал 0x2, SIG->0x300 дал 0x2.
          * Теперь RADIX3 addr (поле 2): если снова 0x2 — НИ ОДИН указатель
          * не разыменовывается до abort => чистый environment-check. */
         wprMeta->sysmemAddrOfRadix3Elf = 0x300;
-        Print(L"v2.85: RADIX ADDR ПОРЧЕН -> 0x%lx\n", wprMeta->sysmemAddrOfRadix3Elf);
+        Print(L"v2.85: RADIX ADDR CORRUPTED -> 0x%lx\n", wprMeta->sysmemAddrOfRadix3Elf);
     }
     {
         /* v2.84: полный дамп meta (248 байт) для побайтового сравнения с живым */
@@ -5597,7 +5598,7 @@ gsp_engine_reset();
     }
     {
         UINT32 fbsz = mmio_read32(0x00100440);
-        Print(L"fb size reg 0x440 = 0x%08x (0xBADF = залочен → константа 10GB)\n", fbsz);
+    Print(L"fb size reg 0x440 = 0x%08x (0xBADF = locked -> using legacy 10GB constant)\n", fbsz);
     }
     __asm__ volatile("wbinvd" ::: "memory");
     Print(L"meta@0x%lx radix@0x%lx ucode@0x%lx v67@0x%lx fb=0x%lx\n",
@@ -5615,26 +5616,26 @@ gsp_engine_reset();
         UINT32 dmatrf = mmio_read32(SEC2_DMATRFCMD);
         UINT32 fbictl = mmio_read32(SEC2_FBIF_CTL);
         UINT32 bcr    = mmio_read32(SEC2_BCR_CTRL);
-        Print(L"sec2: после убийства GFW: CPUCTL=0x%08x DMATRFCMD=0x%08x FBIF_CTL=0x%08x BCR=0x%08x\n",
+        Print(L"sec2: after stopping GFW: CPUCTL=0x%08x DMATRFCMD=0x%08x FBIF_CTL=0x%08x BCR=0x%08x\n",
               cpuctl, dmatrf, fbictl, bcr);
         if (((cpuctl & 0xBADF0000) == 0xBADF0000) ||
             ((dmatrf & 0xBADF0000) == 0xBADF0000)) {
             /* priv lockdown не снят — пробую BCR CORE_SELECT=FALCON
              * (kflcnSwitchToFalcon: "Switch the core to FALCON. Releases priv lockdown.") */
-            Print(L"sec2: залочен — пишу BCR CORE_SELECT=FALCON (0x841668 = 0x1)...\n");
+            Print(L"sec2: locked - writing BCR CORE_SELECT=FALCON (0x841668 = 0x1)...\n");
             mmio_write32(SEC2_BCR_CTRL, 0x1);  /* VALID=1, CORE_SELECT=FALCON(0), BRFETCH=0 */
             for (i = 0; i < 16; i++) mmio_read32(SEC2_BCR_CTRL);
             uefi_call_wrapper(BS->Stall, 1, 10000);
             cpuctl = mmio_read32(SEC2_CPUCTL);
-            Print(L"sec2: CPUCTL после BCR = 0x%08x\n", cpuctl);
+            Print(L"sec2: CPUCTL after BCR = 0x%08x\n", cpuctl);
         }
         if ((cpuctl & 0xBADF0000) == 0xBADF0000) {
-            Print(L"sec2: ВСЁ ЕЩЁ ЗАЛОЧЕН (0xBADF) — SEC2-путь недоступен, останов.\n");
+            Print(L"sec2: STILL LOCKED (0xBADF) - SEC2 path unavailable; stopping.\n");
             goto done;
         }
-        Print(L"sec2: РАЗЛОЧЕН! (CPUCTL=0x%08x) — запускаю SEC2 booter load (механизм Linux-драйвера)\n", cpuctl);
+        Print(L"sec2: UNLOCKED! (CPUCTL=0x%08x) - starting SEC2 booter load (Linux driver flow)\n", cpuctl);
     }
-        Print(L"[40HX 2c] sweep_all 诊断...\n");
+        Print(L"[40HX 2c] sweep_all diagnostics...\n");
 sweep_all(L"SEC2-unlocked");
 
     /* v2.57: SEC2 ucode mapper init_cmd (FRTS/SB) — ПЕРВЫМ (до v2.51!):
@@ -5643,12 +5644,12 @@ sweep_all(L"SEC2-unlocked");
      * DEAD5EC2). Mapper@DMEM[0x698], init_cmd@0x6C4, cmd_in@0x23D0.
      * FRTS→WPR2, SB→privmask. На свежем POST secure-зона цела. */
     sec2_health(L"1-post-unlock");
-    if (!cmp90_skipMapper) {
+    if (!cmp40_skipMapper) {
         if (sec2_ucode_mapper_cmd(wprMetaPhys)) {
-            Print(L"v2.57: *** SEC2 ucode команда сработала (WPR2/SB) ***\n");
+            Print(L"v2.57: *** SEC2 ucode command worked (WPR2/SB) ***\n");
         }
     } else {
-        Print(L"v2.79: mapper-стадия пропущена (приближение к флоу драйвера)\n");
+        Print(L"v2.79: mapper stage skipped (approximating driver flow)\n");
     }
     sec2_health(L"2-post-mapper");
 
@@ -5665,7 +5666,7 @@ u40x_early:
         EFI_STATUS earlySt = early_unlock_path(ucodePhys, fwsecPhys, wprMetaPhys);
         sec2_health(L"9-post-early");
         if (earlySt == EFI_SUCCESS) {
-            Print(L"v2.70: *** ранний путь: PLM открыт ***\n");
+            Print(L"v2.70: *** early path: PLM open ***\n");
             earlyOk = TRUE;
         }
     }
@@ -5683,10 +5684,10 @@ u40x_early:
         BOOLEAN v251ok = driver_replay_v251(fwsecPhys, ucodePhys, wprMetaPhys);
         sec2_health(L"3-post-v251");
         if (v251ok) {
-            Print(L"v2.51: *** результат получен — разблокирую ***\n");
+            Print(L"v2.51: *** result received - unlocking ***\n");
             Status = EFI_SUCCESS;
         } else {
-            Print(L"v2.51: без результата — пробую v2.46 полный реплей\n");
+            Print(L"v2.51: no result - trying full v2.46 replay\n");
     /* v2.46: ПОЛНЫЙ РЕПЛЕЙ последовательности драйвера (3 стадии) — замена
      * v2.45 flow. Если реплей дал результат (наш код выполнился / PLM открыт) —
      * пишем SS0/SS1, FLR, chainload. Иначе — fallback на v2.45 flow. */
@@ -5695,7 +5696,7 @@ u40x_early:
                                               ucodePhys, wprMetaPhys);
         sec2_health(L"4-post-v246");
         if (replayOk) {
-            Print(L"v2.46: *** ПОЛНЫЙ РЕПЛЕЙ УСПЕШЕН — разблокирую ***\n");
+            Print(L"v2.46: *** FULL REPLAY SUCCEEDED - unlocking ***\n");
             Status = EFI_SUCCESS;
         } else {
             /* v2.62: ретрай-луп FWSEC с паузами — гипотеза асинхронного
@@ -5703,20 +5704,20 @@ u40x_early:
             BOOLEAN fwOk = FALSE;
             UINTN attempt;
             for (attempt = 1; attempt <= 3 && !fwOk; attempt++) {
-                Print(L"v2.62: fwsec попытка %d/3 (пауза 3с перед прогоном)...\n",
+                Print(L"v2.62: fwsec attempt %d/3 (3s pause before run)...\n",
                       attempt);
                 uefi_call_wrapper(BS->Stall, 1, 3000000);
                 CopyMem((VOID*)(UINTN)fwsecPhys, fwsec_ga102_bin, FWSEC_SIZE);
                 if (fwsec_boot_gsp(fwsecPhys)) {
                     fwOk = TRUE;
-                    Print(L"v2.62: *** FWSEC СРАБОТАЛ на попытке %d ***\n", attempt);
+                    Print(L"v2.62: *** FWSEC SUCCEEDED on attempt %d ***\n", attempt);
                 } else {
-                    Print(L"v2.62: попытка %d — WPR2 не встал\n", attempt);
+                    Print(L"v2.62: attempt %d - WPR2 was not set\n", attempt);
                 }
                 sec2_health(L"5-fwsec-retry");
             }
             if (fwOk) {
-        Print(L"fwsec: OK — WPR2 установлен. kflcnResetIntoRiscv(GSP)...\n");
+        Print(L"fwsec: OK - WPR2 set. kflcnResetIntoRiscv(GSP)...\n");
         mmio_write32(GSP_ENGINE, 0x1);
         for (i = 0; i < 16; i++) mmio_read32(GSP_ENGINE);
         mmio_write32(GSP_ENGINE, 0x0);
@@ -5724,15 +5725,15 @@ u40x_early:
         uefi_call_wrapper(BS->Stall, 1, 50000);
         mmio_write32(GSP_BCR, 0x111);            /* VALID|CORE_SELECT=RISCV|BRFETCH */
         for (i = 0; i < 16; i++) mmio_read32(GSP_BCR);
-        Print(L"fwsec: GSP BCR после ResetIntoRiscv = 0x%x (0x111 = RISCV)\n",
+        Print(L"fwsec: GSP BCR after ResetIntoRiscv = 0x%x (0x111 = RISC-V)\n",
               mmio_read32(GSP_BCR));
-        mmio_write32(GSP_MAILBOX0, (UINT32)cmp90_meta_low(wprMetaPhys));   /* LibosBootArgs */
-        mmio_write32(GSP_MAILBOX1, (UINT32)(cmp90_meta_low(wprMetaPhys) >> 32));
+        mmio_write32(GSP_MAILBOX0, (UINT32)cmp40_meta_low(wprMetaPhys));   /* LibosBootArgs */
+        mmio_write32(GSP_MAILBOX1, (UINT32)(cmp40_meta_low(wprMetaPhys) >> 32));
         Print(L"fwsec: GSP mbox0=0x%08x mbox1=0x%08x (libos args = WPR meta)\n",
               mmio_read32(GSP_MAILBOX0), mmio_read32(GSP_MAILBOX1));
-        Print(L"fwsec: запускаю SEC2 booter load\n");
+        Print(L"fwsec: starting SEC2 booter load\n");
     } else {
-        Print(L"fwsec: НЕ отработал — SEC2 booter load без WPR2 (как v2.24)\n");
+        Print(L"fwsec: did not complete - SEC2 booter load without WPR2 (as in v2.24)\n");
     }
 
     /* --- SEC2 booter load (V67) — тот же механизм, что в Linux (rejoin15) --- */
@@ -5741,7 +5742,7 @@ u40x_early:
 
     /* v2.25: если BROM-путь не сработал — прямой запуск RISC-V (обход BROM) */
     if (Status != EFI_SUCCESS && riscv_direct_start()) {
-        Print(L"riscv: *** ПРЯМОЙ запуск RISC-V открыл PLM ***\n");
+        Print(L"riscv: *** DIRECT RISC-V start opened PLM ***\n");
         Status = EFI_SUCCESS;
     }
         }   /* конец else (fallback v2.45) */
@@ -5755,7 +5756,7 @@ u40x_early:
     /* v2.99: gen2-цикл — verify + advance (или финальный конфиг) */
     {
         BOOLEAN have2 = FALSE;
-        UINTN gi = mc_var_get(L"CMP90G2", &have2);
+        UINTN gi = mc_var_get(L"CMP40G2", &have2);
         if (g_gen2Fire && have2) {
             /* v2.99f: каждая пара = ПОЛНЫЙ FLR-миницикл внутри EFI,
              * 1:1 как «module reload» у rejoin16:
@@ -5772,7 +5773,7 @@ u40x_early:
              * открыты) — сразу свип и Gen2-конфиг ниже. */
             INTN i, pass;
             BOOLEAN done = FALSE;
-            Print(L"gen2: ботер#1 открыл PLM=0x%08x\n",
+            Print(L"gen2: booter #1 opened PLM=0x%08x\n",
                   mmio_read32(0x00823804U));
             /* v2.100: МУЛЬТИПРОХОД. На хосте семейства с RO-нулями
              * (0xFFFFFFCF/8F) дали точный FF только на ВТОРОМ проходе,
@@ -5780,7 +5781,7 @@ u40x_early:
              * таблицы с FLR-минициклами; перед выстрелом — pre-check:
              * уже точный FF => миницикл не нужен. До 3 проходов. */
             for (pass = 0; pass < 3 && !g_gen2Quick && !done; pass++) {
-                Print(L"gen2: === ПРОХОД %d/3 ===\n", (INTN)pass + 1);
+                Print(L"gen2: === PASS %d/3 ===\n", (INTN)pass + 1);
                 for (i = 1; i < RJ16_N; i++) {
                     volatile UINT32 *pv =
                         (volatile UINT32 *)(UINTN)(v67Phys + 0xf948);
@@ -5831,8 +5832,8 @@ u40x_early:
                         continue;
                     /* v2.99g: НЕ ПРЕРЫВАЕМСЯ — недостrel попадёт в свип и
                      * будет перепроверен следующим проходом (v2.100). */
-                    Print(L"gen2[%d]: readback 0x%08x != FF — продолжаю "
-                          L"(перепроверка в свипе)\n", (INTN)i + 1, rd);
+                        Print(L"gen2[%d]: readback 0x%08x != FF - continuing "
+                          L"(rechecking in sweep)\n", (INTN)i + 1, rd);
                 }
                 /* --- v2.100: свип прохода — критерий ТОЛЬКО точный FF --- */
                 done = TRUE;
@@ -5844,24 +5845,24 @@ u40x_early:
                         continue;
                     cur = mmio_read32(a);
                     if (cur != g_rj16[i].val) {
-                        Print(L"gen2: свип п%d [%d] 0x%08x = 0x%08x — НЕ точный\n",
+                        Print(L"gen2: sweep p%d [%d] 0x%08x = 0x%08x - NOT exact\n",
                               (INTN)pass + 1, (INTN)i + 1, a, cur);
                         done = FALSE;
                     }
                 }
-                Print(L"gen2: проход %d завершён — маски %s\n",
+                Print(L"gen2: pass %d complete - masks %s\n",
                       (INTN)pass + 1,
-                      done ? L"ВСЕ ТОЧНЫЕ FF" : L"НЕ все точные (ещё проход)");
+                      done ? L"ALL EXACT FF" : L"NOT all exact (another pass)");
             }
-            mc_var_set(L"CMP90G2", (UINT32)RJ16_N);
-            Print(L"gen2: таблица пройдена — состояние масок перед конфигом:\n");
+            mc_var_set(L"CMP40G2", (UINT32)RJ16_N);
+            Print(L"gen2: table complete - mask state before configuration:\n");
             {
                 INTN k;
                 for (k = 0; k < RJ16_N; k++)
                     Print(L"gen2: [%d] 0x%08x = 0x%08x\n", (INTN)k,
                           g_rj16[k].addr, mmio_read32(g_rj16[k].addr));
             }
-            Print(L"gen2: применяю конфиг\n");
+            Print(L"gen2: applying configuration\n");
 #ifndef FULL_NOGEN2
             {   /* xrip-рецепт: порядок важен, PL_LINK_RATE НЕ трогаем! */
                 UINT32 v2;
@@ -5896,7 +5897,7 @@ u40x_early:
                     uefi_call_wrapper(BS->Stall, 1, 50000);
                     gv = mmio_read32(0x00823830U);
                     for (t = 0; gv != 0x00000004u && t < 5; t++) {
-                        Print(L"gen2: GFX_SEL readback 0x%08x != 4 — повтор\n",
+                        Print(L"gen2: GFX_SEL readback 0x%08x != 4 - retry\n",
                               gv);
                         uefi_call_wrapper(BS->Stall, 1, 50000);
                         mmio_write32(0x00823830U, 0x00000004u);
@@ -5905,8 +5906,8 @@ u40x_early:
                     }
                     Print(L"gen2: GFX_SPEED_SELECT %s\n",
                           gv == 0x00000004u
-                              ? L"OK = 0x4 (3D-бин открыт)"
-                              : L"НЕ ВСТАЛ — маска 0x823b04 не точный FF?");
+                              ? L"OK = 0x4 (3D bin open)"
+                              : L"NOT SET - mask 0x823b04 is not exact FF?");
                 }
                 /* ===== v2.101: SS0/SS1 — compute-селекторы напрямую =====
                  * Ванильный драйвер ОС не восстанавливает их (это был
@@ -5921,7 +5922,7 @@ u40x_early:
                     uefi_call_wrapper(BS->Stall, 1, 50000);
                     sv = mmio_read32(REG_FEAT_OVR_SM_SPD);
                     for (t = 0; sv != 0x88888888u && t < 5; t++) {
-                        Print(L"gen2: SS0 readback 0x%08x — повтор\n", sv);
+                        Print(L"gen2: SS0 readback 0x%08x - retry\n", sv);
                         uefi_call_wrapper(BS->Stall, 1, 50000);
                         mmio_write32(REG_FEAT_OVR_SM_SPD, 0x88888888u);
                         uefi_call_wrapper(BS->Stall, 1, 50000);
@@ -5931,7 +5932,7 @@ u40x_early:
                     uefi_call_wrapper(BS->Stall, 1, 50000);
                     sv = mmio_read32(REG_FEAT_OVR_SM_SPD_1);
                     for (t = 0; sv != 0x00000008u && t < 5; t++) {
-                        Print(L"gen2: SS1 readback 0x%08x — повтор\n", sv);
+                        Print(L"gen2: SS1 readback 0x%08x - retry\n", sv);
                         uefi_call_wrapper(BS->Stall, 1, 50000);
                         mmio_write32(REG_FEAT_OVR_SM_SPD_1, 0x00000008u);
                         uefi_call_wrapper(BS->Stall, 1, 50000);
@@ -5942,8 +5943,8 @@ u40x_early:
                           mmio_read32(REG_FEAT_OVR_SM_SPD_1),
                           (mmio_read32(REG_FEAT_OVR_SM_SPD) == 0x88888888u &&
                            mmio_read32(REG_FEAT_OVR_SM_SPD_1) == 0x8u)
-                              ? L"OK (compute-бин открыт)"
-                              : L"НЕ ВСТАЛИ");
+                              ? L"OK (compute bin open)"
+                              : L"NOT SET");
                 }
 #ifndef FULL_NOGEN2
                 /* ===== v2.100: phase3 — ОЕ СТОРОНЫ ЛИНКА (рецепт хоста) =====
@@ -5966,7 +5967,7 @@ u40x_early:
                     }
                     if (find_bridge_to(gBus, &bb, &bd, &bf)) {
                         UINTN bc = find_pcie_cap(bb, bd, bf);
-                        Print(L"gen2: апстрим-бридж %02lx:%02lx.%lx "
+                            Print(L"gen2: upstream bridge %02lx:%02lx.%lx "
                               L"pcie_cap@%02lx (RB %d)\n",
                               (INT64)bb, (INT64)bd, (INT64)bf, (INT64)bc,
                               (INTN)gBrIdx);
@@ -5979,8 +5980,8 @@ u40x_early:
                             lc = pci_cfg_rd_idx(gBrIdx, bb, bd, bf, bc + 0x10);
                             pci_cfg_wr_idx(gBrIdx, bb, bd, bf, bc + 0x10,
                                            lc | (1u << 5));/* Retrain Link */
-                            Print(L"gen2: бридж LNKCTL2=%04x TLS=5GT/s + RL "
-                                  L"— тренинг запущен\n", (INTN)(lc2 & 0xFFFF));
+                            Print(L"gen2: bridge LNKCTL2=%04x TLS=5GT/s + RL "
+                                  L"- retraining started\n", (INTN)(lc2 & 0xFFFF));
                         }
                     } else {
                         /* v2.99j: на стенде QEMU GPU висит на root complex
@@ -6021,7 +6022,7 @@ u40x_early:
                         if (bc) {
                             UINT32 ls = pci_cfg_rd_idx(gBrIdx, bb, bd, bf,
                                                        bc + 0x10);
-                            Print(L"gen2: бридж LNKSTA speed=%d width=%d\n",
+                            Print(L"gen2: bridge LNKSTA speed=%d width=%d\n",
                                   (INTN)((ls >> 16) & 0xF),
                                   (INTN)((ls >> 20) & 0xF));
                         }
@@ -6039,10 +6040,10 @@ u40x_early:
                  * снова идёт по fire+quick пути без прогона A. Для релиза
                  * очистку вернуть. */
 #ifdef RELEASE_BUILD
-                uefi_call_wrapper(RT->SetVariable, 6, L"CMP90G2", &mcGuid,
+                uefi_call_wrapper(RT->SetVariable, 6, L"CMP40G2", &mcGuid,
                                   0, 0, NULL);
 #endif
-                Print(L"gen2: Gen2-конфиг применён\n");
+                Print(L"gen2: Gen2 configuration applied\n");
                 /* v2.99n: НИКАКОГО SFS/chainload из EFI — OpenVolume виснет
                  * на этой прошивке (стенд + реальный HW), а preload пуст
                  * (bootmgfw живёт на системном ESP, не на USB).
@@ -6058,8 +6059,8 @@ u40x_early:
                  * Возврат в прошивку: BDS продолжит BootOrder и загрузит
                  * Windows БЕЗ POST — анлок, маски и Gen2-конфиг живы;
                  * драйвер при инициализации тренирует линк до 5GT/s. */
-                Print(L"gen2: возврат в прошивку — Windows по BootOrder "
-                      L"без POST (анлок и Gen2 сохранятся)\n");
+                Print(L"gen2: returning to firmware - Windows via BootOrder "
+                      L"without POST (unlock and Gen2 remain active)\n");
 #else
                 /* ===== v3.03 FIX Code 43 (DIAG-2026-08-25) =====
                  * Хвостовой cleanup КАК В ОБЫЧНОМ ПУТИ v3.01 (проверен на
@@ -6070,22 +6071,22 @@ u40x_early:
                  * финальный FLR — единственный сброс защёлкнутого WPR2.
                  * Маски/селекторы FLR переживают (доказано). После FLR MMIO
                  * не трогаем — функция мертва до конца загрузки ОС. */
-                Print(L"gen2: cleanup — глушу SEC2-спиннер...\n");
+                Print(L"gen2: cleanup - stopping SEC2 spinner...\n");
                 mmio_write32(SEC2_ENGINE, 0x1);
                 { INTN k; for (k = 0; k < 16; k++) mmio_read32(SEC2_ENGINE); }
                 mmio_write32(SEC2_ENGINE, 0x0);
                 { INTN k; for (k = 0; k < 16; k++) mmio_read32(SEC2_ENGINE); }
                 uefi_call_wrapper(BS->Stall, 1, 200000);
-                Print(L"gen2: финальный FLR (сброс защёлкнутого WPR2)...\n");
+                Print(L"gen2: final FLR (resetting latched WPR2)...\n");
                 do_flr();
                 uefi_call_wrapper(BS->Stall, 1, 300000);
-                Print(L"v3.03: возврат в прошивку — Windows по BootOrder "
-                      L"без POST (маски/GFX/SS сохранятся)\n");
+                Print(L"v3.03: returning to firmware - Windows via BootOrder "
+                      L"without POST (masks/GFX/SS remain active)\n");
 #endif
                 goto done;
         } else if (!have2 && (Status == EFI_SUCCESS || directOk || earlyOk)) {
-            mc_var_set(L"CMP90G2", 0);   /* первый успешный анлок — старт циклов */
-            Print(L"gen2: счётчик инициализирован (следующий бут = цикл 1)\n");
+            mc_var_set(L"CMP40G2", 0);   /* first successful unlock starts the cycles */
+            Print(L"gen2: counter initialized (next boot = cycle 1)\n");
         }
     }
 #endif
@@ -6107,7 +6108,7 @@ u40x_early:
          *   2) WPR2 → POST-дефолт 0x1FFFFE00/0 (драйверу нужен чистый WPR2,
          *      иначе его FWSEC/FRTS падает frts_err=0xbe — проверено);
          * Селекторы в fuse-shadow — переживают всё это без FLR. */
-        Print(L"cleanup: глушу SEC2-спиннер...\n");
+        Print(L"cleanup: stopping SEC2 spinner...\n");
         mmio_write32(SEC2_ENGINE, 0x1);
         { UINTN k; for (k = 0; k < 16; k++) mmio_read32(SEC2_ENGINE); }
         mmio_write32(SEC2_ENGINE, 0x0);
@@ -6125,11 +6126,11 @@ u40x_early:
         /* ПЛАН B: BootNext → тёплый ресет. Если POST сохраняет fuse-shadow
          * селекторы — Windows поднимется разлоченной, весь chainload не нужен. */
         if (set_bootnext_windows()) {
-            Print(L"v2.90-WR: тёплый ресет через 3с (BootNext→Windows)...\n");
+            Print(L"v2.90-WR: warm reset in 3s (BootNext -> Windows)...\n");
             uefi_call_wrapper(BS->Stall, 1, 3000000);
             uefi_call_wrapper(RT->ResetSystem, 4, EfiResetWarm, EFI_SUCCESS, 0, NULL);
         }
-        Print(L"v2.90-WR: BootNext не удался — fallback на chainload\n");
+        Print(L"v2.90-WR: BootNext failed - falling back to chainload\n");
 #endif
 
         /* v2.90: FLR ВОЗВРАЩАЕТСЯ — он единственный способ сбросить
@@ -6138,15 +6139,15 @@ u40x_early:
          * падает frts_err=0xbe. Селекторы переживают FLR (доказано 2 раза).
          * СРАЗУ после FLR — StartImage из ОЗУ, БЕЗ печатей и чтений MMIO
          * (функция «мертва» до конца загрузки; консоль на второй ГПУ). */
-        Print(L"FLR (сброс защёлкнутого WPR2)...\n");
+        Print(L"FLR (resetting latched WPR2)...\n");
         do_flr();
         uefi_call_wrapper(BS->Stall, 1, 300000);   /* PCIe: 100мс + запас */
 
 #ifdef MULTI_CARD
         if (g_mcAdvance) {
-            Print(L"multi-card: карта %d разлочена -> BootNext на себя (без ребута)\n",
+            Print(L"multi-card: card %d unlocked -> BootNext to self (without reboot)\n",
                   (INTN)g_mcIndex + 1);
-            mc_var_set(L"CMP90IDX", (UINT32)(g_mcIndex + 1));
+            mc_var_set(L"CMP40IDX", (UINT32)(g_mcIndex + 1));
             mc_set_bootnext_self(ImageHandle);
             goto done;   /* возврат в прошивку: она перезапустит нас с флешки */
         }
@@ -6160,20 +6161,20 @@ u40x_early:
         /* v2.99n/o: SFS/StartImage/BootNext ненадёжны на этой плате
          * (No mapping, OpenVolume-висняк, NVRAM-висяк). Возврат в
          * прошивку: BDS грузит Windows по BootOrder БЕЗ POST */
-        Print(L"v3.0: возврат в прошивку — Windows по BootOrder без POST\n");
+        Print(L"v3.0: returning to firmware - Windows via BootOrder without POST\n");
         goto done;
     }
 
 chainload:
     dump_regs(L"[pre-Windows]");
     if (is_unlocked())
-        Print(L"*** CMP 90HX РАЗБЛОКИРОВАН ***\n");
+    Print(L"*** CMP 40HX UNLOCKED ***\n");
     else
-        Print(L"*** ВНИМАНИЕ: GPU НЕ разблокирован (SS0=0x%08x SS1=0x%08x) ***\n",
+        Print(L"*** WARNING: GPU NOT unlocked (SS0=0x%08x SS1=0x%08x) ***\n",
               mmio_read32(REG_FEAT_OVR_SM_SPD), mmio_read32(REG_FEAT_OVR_SM_SPD_1));
 
 done:
-    Print(L"\nКонец.\n");
+    Print(L"\nDone.\n");
 #if !defined(EFI_AUTOTEST) && !defined(RELEASE_BUILD)
     WaitForSingleEvent(SystemTable->ConIn->WaitForKey, 0);
 #endif
@@ -6181,12 +6182,12 @@ done:
     /* релиз: НИКАКИХ перезагрузок — POST сбросит анлок!
      * Возврат в прошивку: если анлок успел примениться, состояние
      * сохраняется; firmware продолжит boot-порядок (Windows). */
-    Print(L"v3.01: возврат в прошивку без перезагрузки (анлок волатилен)\n");
+    Print(L"v3.01: returning to firmware without reboot (unlock is volatile)\n");
     uefi_call_wrapper(BS->Stall, 1, 2000000);
 #endif
     return EFI_SUCCESS;
 }
-#endif /* U40X_LEGACY_FULL —— 上面的 90HX 全流程到此结束；以下是 v55 40HX DIRECT 主线 */
+#endif /* U40X_LEGACY_FULL: historical flow ends; v55 40HX DIRECT path follows */
 
 /* =====================================================================
  * v55：40HX (TU106, 10de:1f0b) DIRECT-SEC2 主线（重写，2026-09-03）
@@ -6198,8 +6199,8 @@ done:
  *      unlock_v2 移植版沿用 GA102 工程的 bus<<20|dev<<15|fn<<12|reg，
  *      在这块主板上读到的根本不是同一设备（find/BAR 全乱）。
  *   2) BAR0 未先 command|=MEMORY|BUS_MASTER 就 MMIO 直读 → 寄存器全 0。
- *   3) 移植版主流程混入大量 90HX 专属阶段（NVRAM fire 决策、bootmgfw
- *      磁盘预载、probe/sweep/DIAG 全扫、GSP-BL+FWSEC(GA102) 前置），
+ *   3) The ported flow mixed in legacy GA102-only stages (NVRAM fire decision,
+ *      bootmgfw disk preload, probe/sweep/DIAG scans, and GSP-BL+FWSEC setup),
  *      在本板上要么挂死要么执行语义不对的 GA102 固件。
  *   4) booter 几何：原移植把 GA102 的 imem 0x8900@+0x100 / data
  *      0x8A00/0x6200 / ucodeId=3 / hsSig=0x10 套在 TU102(nv616) 的
@@ -6280,8 +6281,7 @@ static int u40x_find_gpu_pass(INTN enc)
         if (id == 0xFFFFFFFFu)
             continue;
         if ((id & 0xFFFFu) == 0x10DEu &&
-            (((id >> 16) & 0xFFFFu) == 0x1F0Bu ||
-             ((id >> 16) & 0xFFFFu) == 0x220Du)) {
+            ((id >> 16) & 0xFFFFu) == 0x1F0Bu) {
             gBus = fastL[k][0]; gDev = fastL[k][1]; gFn = fastL[k][2];
             u40x_enc_found = enc;
             Print(L"[40HX f] fast hit enc=%d %02x:%02x.%x id=0x%08x\n",
@@ -6304,8 +6304,7 @@ static int u40x_find_gpu_pass(INTN enc)
                 if (id == 0xFFFFFFFFu)
                     continue;
                 if ((id & 0xFFFFu) == 0x10DEu &&
-                    (((id >> 16) & 0xFFFFu) == 0x1F0Bu ||
-                     ((id >> 16) & 0xFFFFu) == 0x220Du)) {
+                    ((id >> 16) & 0xFFFFu) == 0x1F0Bu) {
                     gBus = b; gDev = d; gFn = f;
                     u40x_enc_found = enc;
                     Print(L"[40HX f] sweep hit enc=%d %02x:%02x.%x id=0x%08x\n",
@@ -6372,7 +6371,7 @@ static int u40x_find_gpu(void)
         }
 diag_done: ;
     }
-    Print(L"[40HX f] 40HX/90HX not found (both encodings)\n");
+    Print(L"[40HX f] CMP 40HX (10de:1f0b) not found (all encodings)\n");
     return 0;
 }
 
@@ -6391,7 +6390,7 @@ static int u40x_enable_bar(void)
         return -1;
     }
     if ((bar0 & 1u) != 0) {          /* I/O BAR? */
-        Print(L"[40HX bar] BAR0 is I/O (0x%08x) — unexpected\n", bar0);
+        Print(L"[40HX bar] BAR0 is I/O (0x%08x) - unexpected\n", bar0);
         return -2;
     }
     type = (bar0 >> 1) & 3u;
@@ -6431,7 +6430,7 @@ static EFI_STATUS u40x_build_dummy_fw(UINT64 *dataPhys, UINT64 *dataSize)
     }
     SetMem((VOID *)(UINTN)*dataPhys, (UINTN)sz, 0);
     *dataSize = sz;
-    Print(L"[40HX fw] dummy %dMB @0x%lx (ELF sz=0x%lx = log53 真值)\n",
+    Print(L"[40HX fw] dummy %dMB @0x%lx (ELF sz=0x%lx = log53 reference)\n",
           (INTN)(sz >> 20), *dataPhys, sz);
     return EFI_SUCCESS;
 }
@@ -6505,18 +6504,18 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     boot0 = mmio_read32(0x00000000UL);
     Print(L"[40HX] BOOT0=0x%08x (expect arch 0x16<<24 = TU10x)\n", boot0);
     if ((boot0 & 0xFF000000u) != 0x16000000u && boot0 != 0x0FFFFFFFu) {
-        Print(L"[40HX] BOOT0 unexpected — continue anyway (readback may be "
+        Print(L"[40HX] BOOT0 unexpected - continue anyway (readback may be "
               L"gated); dumping key regs\n");
     }
     dump_regs(L"[v55 boot]");
 
     /* ---------- [4] 快捷路径：已解锁 / 直写可粘 ---------- */
     if (is_unlocked()) {
-        Print(L"[40HX] already unlocked (SS0/SS1 exact) — skip injection\n");
+        Print(L"[40HX] already unlocked (SS0/SS1 exact) - skip injection\n");
         goto done;
     }
     if (direct_write_probe()) {
-        Print(L"[40HX] direct MMIO probe succeeded — skip booter\n");
+        Print(L"[40HX] direct MMIO probe succeeded - skip booter\n");
         goto done;
     }
 
@@ -6543,7 +6542,8 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
      * "booter 从 sysmem 读 WPR meta/V67——<4GB 读取被锁 (exit 0x91)"。
      * 驱动 TU102 (kgspExecuteBooterLoad_TU102) 用 mailbox0/1 = LO32/HI32
      * 传 64 位物理地址，meta 本体在 >4GB (驱动 0x110BB0000)。v55 引入的
-     * "签名缓冲 <4G（booter 32 位读）" 是 90HX 老假设，在 TU102 上反了。
+     * The "signature buffer below 4GB (32-bit booter read)" was a legacy
+     * assumption; it is reversed on TU102.
      * v60 实机 mbox0=0x91 可复现 → v67/meta 都在 <4GB，booter 读被锁。 */
     __asm__ volatile("wbinvd" ::: "memory");
     Print(L"[40HX] v67 payload @0x%lx (0x%x B, >4GB)\n", v67Phys, V67_SIZE);
@@ -6595,7 +6595,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
               L"FBIF_CTL=0x%08x BCR=0x%08x\n", cpuctl, dmatrf, fbictl, bcr);
         if (((cpuctl & 0xBADF0000u) == 0xBADF0000u) ||
             ((dmatrf & 0xBADF0000u) == 0xBADF0000u)) {
-            Print(L"[40HX] SEC2 locked — BCR CORE_SELECT=FALCON (0x841668=0)...\n");
+            Print(L"[40HX] SEC2 locked - BCR CORE_SELECT=FALCON (0x841668=0)...\n");
             mmio_write32(SEC2_BCR_CTRL, 0x0);
             for (i = 0; i < 16; i++) mmio_read32(SEC2_BCR_CTRL);
             BS->Stall(10000);
@@ -6603,10 +6603,10 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             Print(L"[40HX] SEC2 CPUCTL after BCR=0: 0x%08x\n", cpuctl);
         }
         if ((cpuctl & 0xBADF0000u) == 0xBADF0000u) {
-            Print(L"[40HX] SEC2 still locked — stop\n");
+        Print(L"[40HX] SEC2 still locked - stop\n");
             goto done;
         }
-        Print(L"[40HX] SEC2 unlocked — direct booter load (DIRECT_SEC2)\n");
+    Print(L"[40HX] SEC2 unlocked - direct booter load (DIRECT_SEC2)\n");
     }
 
     /* ---------- [8b] v66: 40HX 原生 FWSEC on GSP → FRTS → WPR2 up ----------
@@ -6671,12 +6671,12 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         if (is_unlocked())
             Print(L"[40HX] *** UNLOCKED (SS0=0x88888888 SS1=0x8) ***\n");
         else if (plm == VAL_PLM_OPEN || plm == 0xFFFFFF8Fu)
-            Print(L"[40HX] PLM %s — SS0 still gated\n",
+        Print(L"[40HX] PLM %s - SS0 still gated\n",
                   plm == VAL_PLM_OPEN ? L"OPEN" : L"STAGED");
         else
-            Print(L"[40HX] PLM closed — no booter effect observed\n");
+        Print(L"[40HX] PLM closed - no booter effect observed\n");
     }
-    /* v89: SEC2 Sanitize（cyridd kgspCmp40SanitizeSec2AfterExploit 简版——
+    /* v89: SEC2 Sanitize（cyridd/cmpunlocker kgspCmp40SanitizeSec2AfterExploit 简版——
      * 解锁后 SEC2 回冷态：engine reset + MB 清——验证黑屏=非冷态，sanitize 解） */
     Print(L"[40HX v89] SEC2 sanitize (engine reset + MB clear)...\n");
     {
@@ -6708,6 +6708,18 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
 done:
     dump_regs(L"[v55 final]");
+#ifdef NO_AUTO_CHAINLOAD
+    /*
+     * Experimental Limine mode: return to the EFI caller after the unlock.
+     * The normal release path chainloads Windows because returning to firmware
+     * causes a second POST and loses the volatile GPU state.  A boot manager
+     * such as Limine can resume its menu without that firmware reset, but this
+     * path is intentionally opt-in and must be tested on the target board.
+     */
+    Print(L"[40HX] Limine mode: returning to parent EFI boot manager\n");
+    BS->Stall(2000000);
+    return EFI_SUCCESS;
+#else
     /* v71fix: 黑屏很久+驱动掉根因 = return firmware → BDS 重跑 POST →
      * GPU 重新初始化/unlock 丢失。改用黑盒式链载（chainload_preloaded：
      * preload bootmgfw → LoadImage → StartImage → SFS fallback），
@@ -6721,4 +6733,5 @@ done:
     }
     BS->Stall(2000000);
     return EFI_SUCCESS;
+#endif
 }

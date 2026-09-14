@@ -65,9 +65,12 @@ func findGpuClassKeyByEnum() string {
 	return ""
 }
 
-// findGpuClassKeyByName: 名字匹配兜底。伪装驱动时 AdapterString 可能是
-// "NVIDIA GeForce RTX 2070"/"2060 SUPER" 等 → 这些名字也要认。
-// 仅当 Enum 反查失败才走这里(正常不会)。
+// findGpuClassKeyByName: 仅在 Enum 反查失败时使用的安全兜底。
+//
+// 旧版只按 AdapterString/DriverDesc 匹配 "2070"/"2060"。多卡机器上这
+// 可能把真实 RTX 2060/2070 的 Class 键当成 CMP 40HX，随后错误修改
+// EnableGpuFirmware。MatchingDeviceId 是硬件关联字段，因此名称只能作
+// 人类可读的别名过滤，不能替代 PCI ID 校验。
 func findGpuClassKeyByName() string {
 	alias := []string{GpuAdapter40, "2070", "2060", "2060 SUPER", "2060 super"}
 	base, err := registry.OpenKey(registry.LOCAL_MACHINE, GpuClassPath,
@@ -84,6 +87,11 @@ func findGpuClassKeyByName() string {
 		k, err := registry.OpenKey(registry.LOCAL_MACHINE, GpuClassPath+`\`+n,
 			registry.QUERY_VALUE)
 		if err != nil {
+			continue
+		}
+		matchingID, _, _ := k.GetStringValue("MatchingDeviceId")
+		if !strings.Contains(strings.ToUpper(matchingID), strings.ToUpper(GpuMatchID)) {
+			k.Close()
 			continue
 		}
 		adapter, _, _ := k.GetStringValue(GpuAdapterStr)
