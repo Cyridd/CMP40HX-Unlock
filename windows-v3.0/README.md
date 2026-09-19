@@ -45,7 +45,26 @@ manifest. The source verification helper is `tools/verify_source.ps1`.
 libraries, and the binary blobs in the same directory. The normal build
 chainloads Windows after the unlock. `NO_AUTO_CHAINLOAD=1` builds the
 experimental variant that returns to a parent EFI boot manager such as Limine.
+The optional VBIOS capture is disabled in the normal build; enable it with
+`VBIOS_DUMP=1`. The host-side `FEAT_OVR` write probe is diagnostic only and is
+disabled by default; enable it explicitly with `DIRECT_WRITE_PROBE=1` when
+testing a board that is known to tolerate those MMIO transactions.
+The Falcon preload probe is also disabled by default; use `PRELOAD_PROBE=1`
+only for a dedicated diagnostic run.
+Linux/gnu-efi builds use a SysV-ABI internal logger; EFI service callbacks
+remain Microsoft-ABI. This avoids corrupted `%s` diagnostics in the EFI log.
 
 The production path is CMP 40HX/TU106. Legacy GA102 helpers remain in the
 source only as historical research code and are not a claim of support for
 another CMP model. PCIe Gen3 and RT-core unlocks remain unverified research.
+
+The EFI release also contains a best-effort CMP 40HX ReBAR path. It selects
+standard ReBAR selector `7` (8 GiB / 8192 MiB BAR1), relocates BAR1 and BAR3
+inside the upstream bridge's 64-bit prefetch window, and verifies the VRAM
+aperture before accepting the change. The window is chosen from the root
+bridge resource descriptors when firmware exposes them; otherwise a
+topology-relative fallback is tried. Any failed readback or aperture check
+rolls the PCI configuration and XVE state back to the original values.
+The ReBAR path is validated on the author's CMP 40HX system, but remains
+platform-dependent: it needs Above 4G Decoding and a free 8 GiB-aligned
+64-bit MMIO span in the root-complex topology.

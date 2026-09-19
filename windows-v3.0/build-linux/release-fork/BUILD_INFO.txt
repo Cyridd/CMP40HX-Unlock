@@ -1,3 +1,0 @@
-Source tree: /home/cyrid/project2/CMP40HX-Unlock/windows-v3.0
-Built on Linux: 2026-09-15T02:01:43+05:00
-EFI default mode: automatic Windows chainload

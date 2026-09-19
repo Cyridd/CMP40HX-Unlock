@@ -18,6 +18,30 @@ applied again after a full GPU reset or power cycle.
 PCIe Gen3 and RT-core unlocks are research topics and are not advertised as
 working features. This repository targets CMP 40HX only.
 
+## ReBAR / 8 GiB BAR1
+
+The forked EFI can optionally activate the CMP 40HX's standard PCIe
+Resizable BAR control for the full 8 GiB framebuffer. It opens the TU106 XVE
+gate, selects ReBAR selector `7`, sizes BAR1, preserves the existing BAR3
+window, and programs the upstream bridge's 64-bit prefetchable window before
+reenabling decode. A successful run is reported by `40HXCheck.exe` and by
+GPU-Z as an 8192 MiB Resizable BAR.
+
+The EFI no longer assumes a fixed address such as `0x800000000`. It first
+parses the upstream root bridge's ACPI resource descriptors, prefers an
+8-GiB-aligned span immediately after the current bridge window, and otherwise
+uses the top of the reported 64-bit MMIO aperture. Some desktop firmware does
+not implement a useful `RootBridgeIo->Configuration()` resource list; on
+those systems it uses a bridge-relative fallback and still requires BAR
+readback plus VRAM aperture verification. If any check fails, all GPU and
+bridge registers are restored and the machine continues with stock BAR size.
+
+This is deliberately best-effort rather than a promise of universal PCI
+resource allocation. Enable **Above 4G Decoding**, keep the motherboard's
+Resizable BAR support enabled, and test the actual topology. An 8 GiB BAR may
+be rejected when the root complex has no sufficiently large 64-bit MMIO
+aperture or when another bridge already occupies the candidate range.
+
 ## Package Contents
 
 The ready-to-use package is in [`windows-v3.0/release`](windows-v3.0/release/):

@@ -28,6 +28,16 @@ those binaries are reproducible from the v3.0 source tree.
    use `CMP40`/`CMP40HX` terminology. Historical GA102 blobs and their numeric
    geometry remain explicitly marked as legacy data rather than being relabeled
    as unverified TU106 constants.
+6. The EFI now includes the experimentally validated CMP 40HX ReBAR path. It
+   opens the TU106 XVE gate, selects standard ReBAR selector `7`, and grows
+   BAR1 to 8 GiB while preserving and relocating BAR3. The old board-specific
+   fixed BAR address was removed: the code parses root-bridge ACPI resource
+   descriptors, prefers a bridge-relative aligned span, and falls back to the
+   top of the reported 64-bit MMIO aperture. Firmware with no usable resource
+   template gets a topology-relative fallback only; BAR readback and VRAM
+   probing remain mandatory, and every failure restores the original state.
+   ReBAR is therefore best-effort and platform-dependent, not a universal
+   guarantee.
 
 ## Limine experiment
 

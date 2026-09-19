@@ -152,7 +152,14 @@ static void u40x_open_log(void) {
     if (EFI_ERROR(st)) u40x_log = NULL;
     root->Close(root);
 }
+/* The logger is an internal C variadic function.  Linux/gnu-efi call sites
+ * use the SysV ABI; only firmware service function pointers use EFIAPI/MS ABI.
+ * Keeping EFIAPI here corrupts %s and later varargs in the ELF build. */
+#ifdef U40X_GNUEFI_ELF
+static void u40x_print(const CHAR16 *fmt, ...) {
+#else
 static void EFIAPI u40x_print(const CHAR16 *fmt, ...) {
+#endif
     va_list ap;
     va_start(ap, fmt);
     {
@@ -250,6 +257,18 @@ u40x_entry(EFI_HANDLE ImageHandle_, EFI_SYSTEM_TABLE *SystemTable_)
     }
     return efi_main(ImageHandle_, SystemTable_);
 }
+
+#ifdef U40X_GNUEFI_ELF
+/* gnu-efi's crt0 passes arguments to _entry using the SysV ABI. */
+__attribute__((noinline)) EFI_STATUS
+u40x_gnuefi_entry(EFI_HANDLE ImageHandle_, EFI_SYSTEM_TABLE *SystemTable_)
+{
+    EFI_STATUS status = u40x_entry(ImageHandle_, SystemTable_);
+    /* Keep this as a real SysV -> EFI/MS-ABI call, including shadow space. */
+    __asm__ volatile("" : "+a"(status));
+    return status;
+}
+#endif
 
 /* ==== CMP40HX/TU106 registers (BAR0 MMIO) ====
  * PLM/SS0/SS1 are the actual lock bits; the rest is referenced by the
@@ -625,8 +644,9 @@ static void u40x_vbios_dump(void) {
     EFI_FILE_PROTOCOL *root = NULL, *f = NULL;
     EFI_STATUS st;
     UINT32 base;
-    static UINT8 rom[0x100000] __attribute__((aligned(16)));
-    UINTN wrote = sizeof(rom), i;
+    const UINTN rom_size = 0x100000;
+    UINT8 *rom = NULL;
+    UINTN wrote, i;
     if (!BS || !ImageHandle) return;
     st = BS->HandleProtocol(ImageHandle, &u40x_li_guid, (void**)&li);
     if (EFI_ERROR(st) || !li || !li->DeviceHandle) return;
@@ -641,17 +661,41 @@ static void u40x_vbios_dump(void) {
                     EFI_FILE_MODE_CREATE | EFI_FILE_MODE_READ |
                     EFI_FILE_MODE_WRITE, 0);
     if (EFI_ERROR(st) || !f) { Print(L"[vbios] open fail %r\n", st); root->Close(root); return; }
+    st = BS->AllocatePool(EfiLoaderData, rom_size, (VOID **)&rom);
+    if (EFI_ERROR(st) || !rom) {
+        Print(L"[vbios] buffer alloc fail %r\n", st);
+        f->Close(f);
+        root->Close(root);
+        return;
+    }
+    wrote = rom_size;
     base = gBar0Base ? gBar0Base : 0xF6000000U;
     Print(L"[vbios] dump 1MB from BAR0+0x11000 (bar=0x%x)...\n", base);
-    for (i = 0; i < sizeof(rom); i += 4)
+    for (i = 0; i < rom_size; i += 4)
         *(UINT32*)(rom + i) = mmio_read32((base + 0x11000U + (UINT32)i) & 0xFFFFFFFFU);
     Print(L"[vbios] head=%02x%02x%02x%02x (55aa=PCI-ROM ok)\n",
           rom[0], rom[1], rom[2], rom[3]);
-    f->Write(f, &wrote, rom);
-    f->Flush(f);
-    f->Close(f);
+    st = f->Write(f, &wrote, rom);
+    if (EFI_ERROR(st) || wrote != rom_size) {
+        Print(L"[vbios] write failed %r (%d/%d)\n", st,
+              (INTN)wrote, (INTN)rom_size);
+        f->Close(f);
+        BS->FreePool(rom);
+        root->Close(root);
+        return;
+    }
+    st = f->Flush(f);
+    if (EFI_ERROR(st))
+        Print(L"[vbios] flush failed %r\n", st);
+    st = f->Close(f);
+    f = NULL;
+    if (EFI_ERROR(st))
+        Print(L"[vbios] close failed %r\n", st);
     Print(L"[vbios] dump 1MB OK -> \\40hx_vbios.bin\n");
-    root->Close(root);
+    /* Keep the successful dump buffer until the EFI app exits. Some firmware
+     * implementations stall AllocatePool/FreePool bookkeeping after a large
+     * MMIO read, and this buffer is reclaimed with the application anyway. */
+    Print(L"[vbios] dump cleanup done\n");
 }
 #endif
 
@@ -3912,14 +3956,24 @@ direct_write_probe(void)
     UINT32 v;
 
     Print(L"\n--- v2.26: DIRECT FEAT_OVR write (host probe) ---\n");
+    Print(L"[probe] before PLM write (BAR0+0x409650)\n");
     mmio_write32(REG_FEAT_OVR_PLM, VAL_PLM_OPEN);
+    Print(L"[probe] after PLM write\n");
+    Print(L"[probe] before PLM read\n");
     v = mmio_read32(REG_FEAT_OVR_PLM);
+    Print(L"[probe] after PLM read\n");
     Print(L"probe: PLM=0x%08x after writing 0xFFFFFFFF (0xFFFFFF8F = write ignored)\n", v);
 
+    Print(L"[probe] before SS0 write (BAR0+0x409664)\n");
     mmio_write32(REG_FEAT_OVR_SM_SPD, VAL_SS0_UNLOCKED);
+    Print(L"[probe] after SS0 write\n");
+    Print(L"[probe] before SS1 write (BAR0+0x40966c)\n");
     mmio_write32(REG_FEAT_OVR_SM_SPD_1, VAL_SS1_UNLOCKED);
+    Print(L"[probe] after SS1 write\n");
+    Print(L"[probe] before SS0/SS1 read\n");
     Print(L"probe: SS0=0x%08x SS1=0x%08x after writing 0x88888888/0x8\n",
           mmio_read32(REG_FEAT_OVR_SM_SPD), mmio_read32(REG_FEAT_OVR_SM_SPD_1));
+    Print(L"[probe] after SS0/SS1 read\n");
 
     if (is_unlocked()) {
         Print(L"probe: *** DIRECT WRITES WORK - GPU unlocked without booter ***\n");
@@ -3927,13 +3981,21 @@ direct_write_probe(void)
     }
 
     Print(L"probe: diagnostics (is the register locked?):\n");
+    Print(L"[probe] before PLM close write\n");
     mmio_write32(REG_FEAT_OVR_PLM, 0x00000000);
+    Print(L"[probe] after PLM close write\n");
     Print(L"probe:   PLM=0x%08x after 0x0 (close)\n", mmio_read32(REG_FEAT_OVR_PLM));
+    Print(L"[probe] before PLM bit-flip write\n");
     mmio_write32(REG_FEAT_OVR_PLM, 0xFFFFFFFE);
+    Print(L"[probe] after PLM bit-flip write\n");
     Print(L"probe:   PLM=0x%08x after 0xFFFFFFFE (bit0 flip)\n", mmio_read32(REG_FEAT_OVR_PLM));
+    Print(L"[probe] before SS0 diagnostic write\n");
     mmio_write32(REG_FEAT_OVR_SM_SPD, 0x11111111);
+    Print(L"[probe] after SS0 diagnostic write\n");
     Print(L"probe:   SS0=0x%08x after 0x11111111\n", mmio_read32(REG_FEAT_OVR_SM_SPD));
+    Print(L"[probe] before SS1 diagnostic write\n");
     mmio_write32(REG_FEAT_OVR_SM_SPD_1, 0x00000000);
+    Print(L"[probe] after SS1 diagnostic write\n");
     Print(L"probe:   SS1=0x%08x after 0x0\n", mmio_read32(REG_FEAT_OVR_SM_SPD_1));
     return FALSE;
 }
@@ -5250,7 +5312,11 @@ preload_bootmgfw();
     preload_bootmgfw();
 #endif
 
+#ifdef PRELOAD_PROBE
     probe_preload();
+#else
+    Print(L"[40HX] preload probe disabled (normal unlock path)\n");
+#endif
 #ifdef PCIE_GEN2_REJOIN
     if (!g_gen2Fire)   /* v2.99b: fire-итерациям не нужен гигантский свип */
 #endif
@@ -5372,6 +5438,7 @@ gsp_engine_reset();
      * v2.99b: в gen2 fire-режиме НЕ используем: PLM остаётся открыт с прошлого
      * прогона (переживает FLR), probe «успешен» и уводит путь мимо ботера,
      * а XVE/XP3G/OPTB без ботера всё равно не пишутся. */
+#ifdef DIRECT_WRITE_PROBE
     if (
 #ifdef PCIE_GEN2_REJOIN
         !g_gen2Fire &&
@@ -5380,6 +5447,7 @@ gsp_engine_reset();
         Print(L"probe: GPU unlocked by DIRECT writes - skipping booter path\n");
         directOk = TRUE;
     }
+#endif
 
     if (!directOk) {
     /* GFW_BOOT_OK: регистр 0x118234, прогресс в младшем байте (0xFF = COMPLETED);
@@ -6393,6 +6461,12 @@ static int u40x_enable_bar(void)
         Print(L"[40HX bar] BAR0 is I/O (0x%08x) - unexpected\n", bar0);
         return -2;
     }
+    if ((bar0 & ~0xFu) == 0) {
+        /* A zero BAR is not a usable GPU MMIO window.  Continuing would make
+         * the first BAR0 read dereference address 0 and may hard-stall EFI. */
+        Print(L"[40HX bar] BAR0 is zero (0x%08x) - refusing MMIO\n", bar0);
+        return -5;
+    }
     type = (bar0 >> 1) & 3u;
     if (type == 2u) {                /* 64-bit */
         bar0hi = u40x_pci_rbdf(gBus, gDev, gFn, 0x14, enc);
@@ -6408,7 +6482,15 @@ static int u40x_enable_bar(void)
     u40x_pci_wbdf(gBus, gDev, gFn, 0x04, cmd | 0x6u, enc);  /* MEM | BUS_MASTER */
     cmd = u40x_pci_rbdf(gBus, gDev, gFn, 0x04, enc);
     Print(L"[40HX bar] command after |=0x6 = 0x%08x\n", cmd);
-    return (cmd & 0x6u) == 0x6u ? 0 : -4;
+    if ((cmd & 0x6u) != 0x6u) {
+        Print(L"[40HX bar] memory decode/bus master did not stick - refusing MMIO\n");
+        return -4;
+    }
+    if (gBar0Base == 0) {
+        Print(L"[40HX bar] decoded BAR0 base is zero - refusing MMIO\n");
+        return -5;
+    }
+    return 0;
 }
 
 /* 84MB 全零 dummy fw（无磁盘依赖；unlock_v2 同款 fallback） */
@@ -6468,6 +6550,766 @@ static EFI_STATUS u40x_build_radix(UINT64 dataPhys, UINT64 dataSize,
     return EFI_SUCCESS;
 }
 
+/* ===== [11] best-effort ReBAR activation (BAR1, 8 GiB) =====
+ * GPU-side port of the Linux 0003-cmp40hx-rebar-unlock.patch:
+ * unlock the XVE CYA and set the BAR1 size selector. The selector encoding
+ * is the same as on the 50HX (8 = 16 GiB, 9 = 32 GiB), so 7 = 8 GiB, which
+ * matches the 40HX's 8 GB of VRAM. There is no 16/32 GiB path here.
+ * We run AFTER firmware enumeration and resize the upstream bridge window
+ * together with the GPU BARs. The candidate is selected from the root
+ * bridge's reported 64-bit aperture when possible; if no safe candidate or
+ * readback exists, every write is reverted and the boot continues stock.
+ * The kernel-side pci_resize_resource equivalent is done directly: spec
+ * sizing probes via the GPU's discovery encode (works on CF8-only hosts too)
+ * plus BAR1/BAR3 reassignment. */
+#define XVE_CYA_OFF      0x88724UL   /* CYA unlock (write 0x30 to unlock) */
+#define XVE_CAP_OFF      0x88bbcUL   /* size mask (0x400 stock -> 0x7fc00) */
+#define XVE_CFG_OFF      0x88dccUL   /* size selector (0 stock -> 7) */
+#define XVE_CFG_SEL_MASK 0x0000000FU
+#define XVE_CFG_ENABLE   0x80000000U
+
+/* Standard PCIe "Physical Resizable BAR" extended capability (spec, not
+ * NVIDIA-specific): header @0xBB0, then one {Capability,Control} dword pair
+ * per resizable BAR. lspci confirms XVE_CAP_OFF (0x88bbc = cfg 0xBBC) is
+ * BAR1's Capability register, so BAR1's Control register is the next dword.
+ * XVE_CFG_OFF above only widens the *offered* size list (cap mask
+ * 0x400 -> 0x7fc00); the control register below is what actually picks the
+ * size — this was the missing piece: writing only XVE_CFG_OFF left BAR1 at
+ * its old 64 MiB. */
+#define XVE_RBAR_CTL_OFF    0x88bc0UL
+#define XVE_RBAR_SIZE_MASK  0x00003F00U   /* bits [13:8] */
+#define XVE_RBAR_SIZE_SHIFT 8U
+
+#define U40X_REBAR_SIZE       0x200000000ULL  /* 8 GiB */
+#define U40X_REBAR_SELECTOR   7U              /* 7 = 8 GiB (XVE_CFG_OFF) */
+#define U40X_REBAR_ENCSIZE    13U             /* log2(MiB): 2^13 MiB = 8 GiB */
+
+/* Config access MUST reuse the GPU's discovery encode: cfg_read/write32 go
+ * through gRb with one fixed layout and return zeros on CF8-found (enc=2)
+ * hosts. */
+static UINT32 rebar_rd(UINTN reg)
+{
+    return u40x_pci_rbdf(gBus, gDev, gFn, reg, u40x_enc_found);
+}
+
+static VOID rebar_wr(UINTN reg, UINT32 v)
+{
+    u40x_pci_wbdf(gBus, gDev, gFn, reg, v, u40x_enc_found);
+}
+
+/* Upstream-bridge lookup for ReBAR.
+ *
+ * find_bridge_to()/pci_cfg_rd_idx() always address the root bridge with the
+ * COMPACT layout (bus<<20|dev<<15|fn<<12). On boards where the GPU was found
+ * with the canonical layout (enc=0, bus<<24|dev<<16|fn<<8 — e.g. the
+ * 10:00.0 board in the first rebar log) every read returns 0xFFFFFFFF and the
+ * bridge is "not found". These helpers use the SAME encoding the GPU was
+ * discovered with (u40x_enc_found). Read-only: nothing is ever written to
+ * the bridge, so probing several root bridges is harmless. */
+static UINT32
+rebar_br_rd(UINTN ri, UINTN b, UINTN d, UINTN f, UINTN reg)
+{
+    INTN enc = u40x_enc_found;
+    UINT32 v = 0xFFFFFFFFU;
+    UINT64 A;
+
+    if (enc == 2) {                      /* CF8/CFC (reg <= 0xFF) */
+        UINT32 a = 0x80000000u | ((UINT32)b << 16) | ((UINT32)d << 11) |
+                   ((UINT32)f << 8) | ((UINT32)reg & 0xFCu);
+        __asm__ __volatile__("outl %0, %w1" : : "a"(a), "Nd"(0xCF8));
+        __asm__ __volatile__("inl %w1, %0" : "=a"(v) : "Nd"(0xCFC));
+        return v;
+    }
+    if (ri >= gRbAllN)
+        return v;
+    A = enc ? U40X_CFG_ADDR_COMPACT(b, d, f, reg) : U40X_CFG_ADDR(b, d, f, reg);
+    if (EFI_ERROR(gRbAll[ri]->Pci.Read(gRbAll[ri], EfiPciIoWidthUint32,
+                                       A, 1, &v)))
+        v = 0xFFFFFFFFU;
+    return v;
+}
+
+/* Find the type-1 bridge whose SECONDARY bus == target_bus. Only buses below
+ * target_bus can host it. (find_bridge_to compares the subordinate byte,
+ * which picks the wrong bridge behind a switch.) */
+static BOOLEAN
+rebar_find_bridge(UINTN target_bus, UINTN *ob, UINTN *od, UINTN *of,
+                  UINTN *ori)
+{
+    UINTN ri, nri, b, d, f;
+
+    rb_collect();
+    nri = (u40x_enc_found == 2) ? 1 : gRbAllN;
+    for (ri = 0; ri < nri; ri++)
+        for (b = 0; b < target_bus; b++)
+            for (d = 0; d < 32; d++) {
+                BOOLEAN multi = TRUE;
+                for (f = 0; f < 8 && multi; f++) {
+                    UINT32 id = rebar_br_rd(ri, b, d, f, 0x00);
+                    UINT32 ht, br;
+                    if (id == 0xFFFFFFFFU || id == 0) {
+                        if (f == 0)
+                            break;
+                        continue;
+                    }
+                    ht = rebar_br_rd(ri, b, d, f, 0x0C);
+                    if (f == 0 && !(ht & 0x00800000U))
+                        multi = FALSE;           /* single-function device */
+                    if (((ht >> 16) & 0x7F) != 1)
+                        continue;                /* not a bridge */
+                    br = rebar_br_rd(ri, b, d, f, 0x18);
+                    if (((br >> 8) & 0xFF) != target_bus)
+                        continue;
+                    *ob = b; *od = d; *of = f; *ori = ri;
+                    return TRUE;
+                }
+            }
+    return FALSE;
+}
+
+static VOID
+rebar_br_wr(UINTN ri, UINTN b, UINTN d, UINTN f, UINTN reg, UINT32 v)
+{
+    INTN enc = u40x_enc_found;
+    UINT64 A;
+
+    if (enc == 2) {
+        UINT32 a = 0x80000000u | ((UINT32)b << 16) | ((UINT32)d << 11) |
+                   ((UINT32)f << 8) | ((UINT32)reg & 0xFCu);
+        __asm__ __volatile__("outl %0, %w1" : : "a"(a), "Nd"(0xCF8));
+        __asm__ __volatile__("outl %0, %w1" : : "a"(v), "Nd"(0xCFC));
+        return;
+    }
+    if (ri >= gRbAllN)
+        return;
+    A = enc ? U40X_CFG_ADDR_COMPACT(b, d, f, reg) : U40X_CFG_ADDR(b, d, f, reg);
+    gRbAll[ri]->Pci.Write(gRbAll[ri], EfiPciIoWidthUint32, A, 1, &v);
+}
+
+/* Spec BAR sizing probe (all-ones / readback), generalized for any 64-bit
+ * prefetchable BAR pair (loReg, loReg+4). Decode must already be off. */
+static UINT64
+rebar_probe_bar_size(UINTN loReg)
+{
+    UINT32 rlo, rhi;
+    UINT64 mask;
+
+    rebar_wr(loReg, 0xFFFFFFFFU);
+    rebar_wr(loReg + 4, 0xFFFFFFFFU);
+    rlo = rebar_rd(loReg) & 0xFFFFFFF0U;
+    rhi = rebar_rd(loReg + 4);
+    mask = (UINT64)rlo | ((UINT64)rhi << 32);
+    if (mask == 0)
+        return 0;
+    return (~mask) + 1ULL;
+}
+
+/* Resource-list helpers.  Configuration() returns an ACPI resource-template
+ * byte stream, not a PCI BAR list.  Some firmware exposes only QWORD memory
+ * descriptors (0x8a), while older firmware uses DWORD descriptors (0x87).
+ * Keep the parser deliberately small and bounded: a malformed list must make
+ * ReBAR skip, never make the EFI application walk off into MMIO. */
+typedef struct {
+    UINT64 min;
+    UINT64 max;
+    BOOLEAN valid;
+} U40X_REBAR_RANGE;
+
+static UINT64
+rebar_align_up(UINT64 value, UINT64 alignment)
+{
+    UINT64 mask = alignment - 1;
+    if (value > ~mask)
+        return 0;
+    return (value + mask) & ~mask;
+}
+
+static UINT64
+rebar_align_down(UINT64 value, UINT64 alignment)
+{
+    return value & ~(alignment - 1);
+}
+
+static BOOLEAN
+rebar_parse_range(const UINT8 *p, UINTN total, U40X_REBAR_RANGE *out,
+                  UINTN *descriptor_size)
+{
+    UINT16 len;
+    UINT64 mn, mx, span;
+    UINT8 type;
+
+    if (!p || !out || !descriptor_size || total < 3)
+        return FALSE;
+    *descriptor_size = 0;
+    if (p[0] == 0x79) { /* End Tag */
+        *descriptor_size = 2;
+        return FALSE;
+    }
+    if ((p[0] & 0x80U) == 0) {
+        /* Small descriptors are not address ranges we can use here. */
+        *descriptor_size = (UINTN)((p[0] & 7U) + 1U);
+        return FALSE;
+    }
+    if (total < 3) return FALSE;
+    CopyMem(&len, p + 1, 2);
+    *descriptor_size = (UINTN)len + 3U;
+    if (*descriptor_size > total)
+        return FALSE;
+
+    type = (UINT8)(p[0] & 0x7FU);
+    if (type == 0x0A && len >= 0x2B) { /* QWORD address-space descriptor */
+        CopyMem(&mn, p + 14, 8);
+        CopyMem(&mx, p + 22, 8);
+        CopyMem(&span, p + 38, 8);
+    } else if (type == 0x07 && len >= 0x1B) { /* DWORD address-space */
+        UINT32 mn32, mx32, span32;
+        CopyMem(&mn32, p + 10, 4);
+        CopyMem(&mx32, p + 14, 4);
+        CopyMem(&span32, p + 22, 4);
+        mn = mn32;
+        mx = mx32;
+        span = span32;
+    } else {
+        return FALSE;
+    }
+    /* A few AMI implementations expose a wrapped/zeroed MaxAddress while
+     * leaving AddrLen intact.  Recover the effective end from Min+Length;
+     * reject it if even that arithmetic is impossible. */
+    if (mx < mn && span != 0 && mn <= ~((UINT64)0) - (span - 1))
+        mx = mn + span - 1;
+    /* ResourceType 0 = memory.  A zero-length descriptor is not useful. */
+    if (p[3] != 0 || mn > mx)
+        return FALSE;
+    out->min = mn;
+    out->max = mx;
+    out->valid = TRUE;
+    return TRUE;
+}
+
+static BOOLEAN
+rebar_get_root_range(UINTN ri, U40X_REBAR_RANGE *best)
+{
+    VOID *res = NULL;
+    UINT8 *p;
+    UINTN guard = 0;
+    BOOLEAN found = FALSE;
+    BOOLEAN high_found = FALSE;
+
+    if (ri >= gRbAllN || !best)
+        return FALSE;
+    best->valid = FALSE;
+    if (EFI_ERROR(gRbAll[ri]->Configuration(gRbAll[ri], &res)) || !res)
+        return FALSE;
+    p = (UINT8 *)res;
+    while (guard++ < 128 && p[0] != 0x79) {
+        U40X_REBAR_RANGE cur;
+        UINTN desc = 0;
+        if (rebar_parse_range(p, 0x10000, &cur, &desc) && cur.valid) {
+            /* Prefer a descriptor that actually reaches above 4 GiB.  A
+             * firmware may report a very wide low-MMIO range alongside a
+             * narrower high-MMIO range; the former cannot host an 8 GiB BAR. */
+            if (cur.max >= 0x100000000ULL &&
+                (!high_found || (cur.max - cur.min) > (best->max - best->min))) {
+                *best = cur;
+                found = TRUE;
+                high_found = TRUE;
+            } else if (!high_found &&
+                       (!found || (cur.max - cur.min) > (best->max - best->min))) {
+                *best = cur;
+                found = TRUE;
+            }
+        }
+        if (!desc || desc > 0x10000)
+            break;
+        p += desc;
+    }
+    return found;
+}
+
+/* Print all available root apertures and return the one belonging to the
+ * bridge carrying the GPU.  Configuration() is optional in practice: several
+ * desktop firmwares return EFI_UNSUPPORTED or an empty template. */
+static BOOLEAN
+rebar_dump_aperture(UINTN selected_ri, U40X_REBAR_RANGE *selected)
+{
+    UINTN i;
+    BOOLEAN found = FALSE;
+
+    if (selected)
+        selected->valid = FALSE;
+    for (i = 0; i < gRbAllN; i++) {
+        U40X_REBAR_RANGE range;
+        if (!rebar_get_root_range(i, &range))
+            continue;
+        Print(L"[rebar] RB%d MMIO aperture 0x%llx..0x%llx\n",
+              (INT32)i, range.min, range.max);
+        if (i == selected_ri && selected) {
+            *selected = range;
+            found = TRUE;
+        }
+    }
+    return found;
+}
+
+/* Is [base, base+size-1] mentioned ANYWHERE in the EFI memory map — as RAM,
+ * as firmware-reserved space, as ACPI NVS/reclaim, as a known MMIO region,
+ * anything? If so it is NOT safe to park a relocated BAR there: at best
+ * we'd collide with something the firmware already owns, at worst we'd
+ * alias live System RAM and corrupt it the moment the GPU's BAR1 decode
+ * comes back on.
+ *
+ * This is the actual portable, spec-correct safety net. RootBridgeIo->
+ * Configuration() is NOT a free-space API — per the UEFI spec it reports
+ * the CURRENT resource settings of the root bridge (i.e. what child
+ * devices already consume), not what else could be routed there. On this
+ * board it returned 0x7fe0000000..0x7ff9ffffff, which is essentially the
+ * union of the bridge's OWN already-assigned window and its sibling's —
+ * a few hundred MB, nowhere close to a real free-space ceiling. Treating
+ * that as a hard ceiling is why the dynamic search below used to reject
+ * every candidate outright (candidate was always computed to sit right
+ * above old_lim, which IS root.max here, so it could never satisfy
+ * candidate+size-1 <= root.max). Configuration()'s output is kept below
+ * only for the diagnostic log line, never as an accept/reject input. */
+static BOOLEAN
+rebar_addr_in_memmap(UINT64 base, UINT64 size)
+{
+    EFI_MEMORY_DESCRIPTOR *map = NULL, *ent;
+    UINTN mapSize = 0, mapKey, descSize, i, n;
+    UINT32 descVer;
+    EFI_STATUS st;
+    UINT64 end = base + size - 1;
+    BOOLEAN hit = FALSE;
+
+    st = BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer);
+    if (st != EFI_BUFFER_TOO_SMALL)
+        return TRUE; /* can't verify -> assume unsafe */
+    mapSize += 4 * descSize; /* AllocatePool below can itself grow the map */
+    if (EFI_ERROR(BS->AllocatePool(EfiLoaderData, mapSize, (VOID **)&map)) || !map)
+        return TRUE;
+    st = BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer);
+    if (EFI_ERROR(st)) {
+        BS->FreePool(map);
+        return TRUE;
+    }
+    n = mapSize / descSize;
+    for (i = 0; i < n; i++) {
+        UINT64 eBase, eEnd;
+        ent = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)map + i * descSize);
+        eBase = ent->PhysicalStart;
+        eEnd  = eBase + (ent->NumberOfPages << 12) - 1;
+        if (base <= eEnd && end >= eBase) {
+            hit = TRUE;
+            break;
+        }
+    }
+    BS->FreePool(map);
+    return hit;
+}
+
+static BOOLEAN
+rebar_window_conflicts(UINTN selected_ri, UINTN selected_b, UINTN selected_d,
+                       UINTN selected_f, UINT64 candidate, UINT64 size)
+{
+    UINTN ri, nri, b, d, f;
+    UINT64 candidate_end;
+
+    if (!size || candidate > ~((UINT64)0) - (size - 1))
+        return TRUE;
+    candidate_end = candidate + size - 1;
+    rb_collect();
+    nri = (u40x_enc_found == 2) ? 1 : gRbAllN;
+    for (ri = 0; ri < nri; ri++)
+        for (b = 0; b < gBus; b++)
+            for (d = 0; d < 32; d++) {
+                BOOLEAN multi = TRUE;
+                for (f = 0; f < 8 && multi; f++) {
+                    UINT32 id = rebar_br_rd(ri, b, d, f, 0x00);
+                    UINT32 ht, cmd, br24, br28, br2c;
+                    UINT64 base, limit;
+                    if (id == 0xFFFFFFFFU || id == 0) {
+                        if (f == 0)
+                            break;
+                        continue;
+                    }
+                    ht = rebar_br_rd(ri, b, d, f, 0x0C);
+                    if (f == 0 && !(ht & 0x00800000U))
+                        multi = FALSE;
+                    if (((ht >> 16) & 0x7F) != 1)
+                        continue;
+                    if (ri == selected_ri && b == selected_b &&
+                        d == selected_d && f == selected_f)
+                        continue;
+                    cmd = rebar_br_rd(ri, b, d, f, 0x04);
+                    if (cmd == 0xFFFFFFFFU || !(cmd & 0x2U))
+                        continue;
+                    br24 = rebar_br_rd(ri, b, d, f, 0x24);
+                    br28 = rebar_br_rd(ri, b, d, f, 0x28);
+                    br2c = rebar_br_rd(ri, b, d, f, 0x2C);
+                    if (br24 == 0xFFFFFFFFU || br28 == 0xFFFFFFFFU ||
+                        br2c == 0xFFFFFFFFU || br24 == 0 ||
+                        br24 == 0x0000FFFFU)
+                        continue;
+                    base = (((UINT64)(br24 >> 4) & 0xFFFULL) << 20) |
+                           ((UINT64)br28 << 32);
+                    limit = (((UINT64)(br24 >> 20) & 0xFFFULL) << 20) |
+                            ((UINT64)br2c << 32) | 0xFFFFFULL;
+                    if (base > limit)
+                        continue;
+                    if (candidate <= limit && candidate_end >= base) {
+                        Print(L"[rebar] candidate overlaps bridge %02x:%02x.%x "
+                              L"window 0x%llx..0x%llx\n",
+                              (UINT32)b, (UINT32)d, (UINT32)f, base, limit);
+                        return TRUE;
+                    }
+                }
+            }
+    return FALSE;
+}
+
+/* Highest address that appears ANYWHERE in the EFI memory map (RAM, ACPI
+ * NVS/reclaim, firmware-reserved, any MMIO the firmware already knows
+ * about). Used as the search anchor below — see rebar_choose_window's
+ * comment for why "just above the bridge's own stock window" is the
+ * WRONG anchor on some boards. */
+static UINT64
+rebar_memmap_top(VOID)
+{
+    EFI_MEMORY_DESCRIPTOR *map = NULL, *ent;
+    UINTN mapSize = 0, mapKey, descSize, i, n;
+    UINT32 descVer;
+    EFI_STATUS st;
+    UINT64 top = 0;
+
+    st = BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer);
+    if (st != EFI_BUFFER_TOO_SMALL)
+        return 0;
+    mapSize += 4 * descSize;
+    if (EFI_ERROR(BS->AllocatePool(EfiLoaderData, mapSize, (VOID **)&map)) || !map)
+        return 0;
+    st = BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer);
+    if (EFI_ERROR(st)) {
+        BS->FreePool(map);
+        return 0;
+    }
+    n = mapSize / descSize;
+    for (i = 0; i < n; i++) {
+        UINT64 end;
+        ent = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)map + i * descSize);
+        end = ent->PhysicalStart + (ent->NumberOfPages << 12);
+        if (end > top)
+            top = end;
+    }
+    BS->FreePool(map);
+    return top;
+}
+
+/* Choose a candidate window.
+ *
+ * IMPORTANT: the anchor is the top of the EFI memory map (end of the
+ * highest RAM/reserved/known-MMIO region), NOT "just above the bridge's
+ * own stock prefetch window". Those are very different places. On a
+ * board where the platform's whole 64-bit MMIO aperture is huge (here:
+ * ~495 GiB, confirmed via `dmesg | grep "root bus resource"`) and the
+ * firmware happened to assign the bridge's stock window right near the
+ * TOP of that aperture (here: 0x7ff4000000, only ~96 MiB below the real
+ * ceiling 0x7fffffffff), searching upward from the stock window's own
+ * limit runs out of legal room almost immediately — every candidate ends
+ * up past the actual _CRS-granted range and the search fails outright,
+ * even though tens of GiB of free space exist elsewhere. That is exactly
+ * what happened on this board (see the "latest" log: search started at
+ * 0x8000000000, one byte past the true ceiling).
+ *
+ * The free space that actually worked (0x800000000, confirmed by both a
+ * successful run here and by observing where Linux itself places BAR1
+ * after its own resize) sits near the BOTTOM of the aperture: right
+ * above installed RAM, nowhere near the bridge's own window. Anchoring
+ * on "top of everything the firmware's memory map already accounts for"
+ * finds that same neighbourhood without hard-coding a board-specific
+ * constant, because top-of-RAM is something GetMemoryMap() reports
+ * portably on every UEFI implementation.
+ *
+ * Each candidate is accepted only if BOTH hold:
+ *   - it doesn't overlap another bridge's live prefetch window
+ *     (rebar_window_conflicts — a real PCI config-space read)
+ *   - it doesn't appear anywhere in the EFI memory map at all
+ *     (rebar_addr_in_memmap)
+ * RootBridgeIo->Configuration() is still not used to accept or reject a
+ * candidate (see rebar_addr_in_memmap's comment); it is only logged. */
+static BOOLEAN
+rebar_choose_window(UINTN bri, UINTN bridge_b, UINTN bridge_d, UINTN bridge_f,
+                     UINT32 br24, UINT32 br28, UINT32 br2c, UINT64 required,
+                     UINT64 alignment, UINT64 *base)
+{
+    U40X_REBAR_RANGE root;
+    UINT64 old_base, old_lim, anchor, candidate, step;
+    UINTN attempt;
+
+    if (!base || required == 0)
+        return FALSE;
+    if (br24 == 0xFFFFFFFFU || br28 == 0xFFFFFFFFU ||
+        br2c == 0xFFFFFFFFU) {
+        Print(L"[rebar] bridge prefetch window is unreadable\n");
+        return FALSE;
+    }
+    old_base = (((UINT64)(br24 >> 4) & 0xFFFULL) << 20) |
+               ((UINT64)br28 << 32);
+    old_lim = (((UINT64)(br24 >> 20) & 0xFFFULL) << 20) |
+              ((UINT64)br2c << 32) | 0xFFFFFULL;
+    if (old_lim < old_base || old_lim == ~((UINT64)0)) {
+        Print(L"[rebar] bridge prefetch window is invalid\n");
+        return FALSE;
+    }
+
+    /* logged only, not a constraint — see rebar_addr_in_memmap comment */
+    if (rebar_dump_aperture(bri, &root) && root.valid)
+        Print(L"[rebar] (Configuration() reports 0x%llx..0x%llx — this is "
+              L"the CURRENT resource footprint under this bridge, not an "
+              L"upper bound; ignored for placement)\n", root.min, root.max);
+
+    anchor = rebar_memmap_top();
+    if (anchor < 0x100000000ULL) /* be conservative below 4 GiB regardless */
+        anchor = 0x100000000ULL;
+    Print(L"[rebar] search anchor (top of EFI memory map) = 0x%llx "
+          L"(bridge's own stock window sits at 0x%llx..0x%llx, %s it)\n",
+          anchor, old_base, old_lim,
+          anchor < old_base ? L"below" : L"at/above");
+
+    step = rebar_align_up(required, alignment);
+    if (!step)
+        step = alignment;
+    for (attempt = 0; attempt < 12; attempt++) {
+        UINT64 gap = step * (UINT64)(1ULL << attempt); /* growing gap */
+
+        if (gap < step) /* overflow */
+            break;
+        candidate = rebar_align_up(anchor, alignment);
+        if (!candidate || candidate < anchor)
+            break;
+        if (attempt) {
+            if (candidate > ~((UINT64)0) - gap)
+                break;
+            candidate += gap;
+        }
+        if (candidate > ~((UINT64)0) - (required - 1))
+            break;
+        if (rebar_window_conflicts(bri, bridge_b, bridge_d, bridge_f,
+                                   candidate, required)) {
+            Print(L"[rebar] candidate 0x%llx..0x%llx overlaps another "
+                  L"bridge — trying further out\n",
+                  candidate, candidate + required - 1);
+            continue;
+        }
+        if (rebar_addr_in_memmap(candidate, required)) {
+            Print(L"[rebar] candidate 0x%llx..0x%llx appears in the EFI "
+                  L"memory map (RAM/reserved/known-MMIO) — trying further "
+                  L"out\n", candidate, candidate + required - 1);
+            continue;
+        }
+        *base = candidate;
+        Print(L"[rebar] selected MMIO window 0x%llx..0x%llx (attempt %d, "
+              L"clear of the memory map and of every other bridge)\n",
+              candidate, candidate + required - 1, (INT32)attempt);
+        return TRUE;
+    }
+    Print(L"[rebar] no safe %llx-byte window found above 0x%llx after "
+          L"%d attempts\n", required, anchor, (INT32)attempt);
+    return FALSE;
+}
+
+static VOID
+u40x_rebar_revert(UINT32 cfg, UINT32 cya, UINT32 ctl, UINT32 cmd,
+                  UINT32 b1lo, UINT32 b1hi, UINT32 b3lo, UINT32 b3hi,
+                  UINTN bri, UINTN bb, UINTN bd, UINTN bf,
+                  UINT32 brcmd, UINT32 br24, UINT32 br28, UINT32 br2c)
+{
+    /* bridge window back first (decode off while restoring, like on the
+     * way in), then the BARs, then decode back on both, then XVE last */
+    rebar_br_wr(bri, bb, bd, bf, 0x04, brcmd & ~0x2U);
+    rebar_br_wr(bri, bb, bd, bf, 0x24, br24);
+    rebar_br_wr(bri, bb, bd, bf, 0x28, br28);
+    rebar_br_wr(bri, bb, bd, bf, 0x2C, br2c);
+    rebar_wr(0x14, b1lo);
+    rebar_wr(0x18, b1hi);
+    rebar_wr(0x1C, b3lo);
+    rebar_wr(0x20, b3hi);
+    rebar_wr(0x04, cmd);
+    rebar_br_wr(bri, bb, bd, bf, 0x04, brcmd);
+    mmio_write32(XVE_RBAR_CTL_OFF, ctl);
+    mmio_write32(XVE_CFG_OFF, cfg);
+    mmio_write32(XVE_CYA_OFF, cya);
+    (void)mmio_read32(XVE_CYA_OFF);
+}
+
+static VOID
+u40x_rebar_try(UINT64 want, UINT32 selector)
+{
+    UINT32 cya, cfg, cap, ctl, cmd, b1lo, b1hi, b3lo, b3hi, rlo, rhi, dw;
+    UINT32 brcmd, br24, br28, br2c;
+    UINT64 b1base, b3base, size3, cand1, cand3, winlim, required;
+    UINTN bb = 0, bd = 0, bf = 0, bri = 0;
+
+    cya    = mmio_read32(XVE_CYA_OFF);
+    cfg    = mmio_read32(XVE_CFG_OFF);
+    cap    = mmio_read32(XVE_CAP_OFF);
+    ctl    = mmio_read32(XVE_RBAR_CTL_OFF);
+    cmd    = rebar_rd(0x04);
+    b1lo   = rebar_rd(0x14);
+    b1hi   = rebar_rd(0x18);
+    b3lo   = rebar_rd(0x1C);
+    b3hi   = rebar_rd(0x20);
+    b1base = (UINT64)(b1lo & 0xFFFFFFF0U) | ((UINT64)b1hi << 32);
+    b3base = (UINT64)(b3lo & 0xFFFFFFF0U) | ((UINT64)b3hi << 32);
+    Print(L"[rebar] XVE cya=0x%08x cfg=0x%08x cap=0x%08x ctl=0x%08x\n",
+          cya, cfg, cap, ctl);
+    Print(L"[rebar] BAR1 base=0x%llx flags=0x%x  BAR3 base=0x%llx flags=0x%x"
+          L"  cmd=0x%08x\n",
+          b1base, b1lo & 0xFU, b3base, b3lo & 0xFU, cmd);
+
+    if ((b1lo & 0xFU) != 0xCU) {
+        Print(L"[rebar] BAR1 is not 64-bit prefetchable — skip\n");
+        return;
+    }
+    if (!rebar_find_bridge(gBus, &bb, &bd, &bf, &bri)) {
+        Print(L"[rebar] upstream bridge of bus %02x not found (enc=%d) — skip\n",
+              (UINT32)gBus, (INT32)u40x_enc_found);
+        return;
+    }
+    brcmd = rebar_br_rd(bri, bb, bd, bf, 0x04);
+    br24  = rebar_br_rd(bri, bb, bd, bf, 0x24);
+    br28  = rebar_br_rd(bri, bb, bd, bf, 0x28);
+    br2c  = rebar_br_rd(bri, bb, bd, bf, 0x2C);
+    dw = br24;
+    Print(L"[rebar] bridge %02x:%02x.%x (RB%d) stock pref window "
+          L"reg24=0x%08x base_hi=0x%08x lim_hi=0x%08x cmd=0x%08x\n",
+          (UINT32)bb, (UINT32)bd, (UINT32)bf, (INT32)bri,
+          dw, br28, br2c, brcmd);
+
+    /* cand1 is selected from the root bridge aperture after BAR sizing below.
+     * Do not use a board-specific address: the same EFI is expected to work
+     * on systems where firmware placed the bridge at a different high-MMIO
+     * location. */
+    cand1  = 0;
+    cand3  = 0; /* filled in after we know BAR3's real size */
+    winlim = 0;
+
+    /* activate: CYA unlock + XVE size-list selector (widens cap mask),
+     * THEN the standard ReBAR Control size field (actually picks the
+     * size — this is the step that was missing before) */
+    mmio_write32(XVE_CYA_OFF, 0x30U);
+    mmio_write32(XVE_CFG_OFF, (cfg & ~XVE_CFG_SEL_MASK) | XVE_CFG_ENABLE | selector);
+    if ((mmio_read32(XVE_CFG_OFF) & (XVE_CFG_ENABLE | XVE_CFG_SEL_MASK))
+        != (XVE_CFG_ENABLE | selector)) {
+        Print(L"[rebar] XVE readback failed (cfg now 0x%08x) — revert\n",
+              mmio_read32(XVE_CFG_OFF));
+        mmio_write32(XVE_CFG_OFF, cfg);
+        mmio_write32(XVE_CYA_OFF, cya);
+        return;
+    }
+    mmio_write32(XVE_RBAR_CTL_OFF,
+                 (ctl & ~XVE_RBAR_SIZE_MASK) |
+                 (U40X_REBAR_ENCSIZE << XVE_RBAR_SIZE_SHIFT));
+    Print(L"[rebar] XVE after: cya=0x%08x cfg=0x%08x cap=0x%08x ctl=0x%08x\n",
+          mmio_read32(XVE_CYA_OFF), mmio_read32(XVE_CFG_OFF),
+          mmio_read32(XVE_CAP_OFF), mmio_read32(XVE_RBAR_CTL_OFF));
+
+    /* decode off on both GPU and bridge before touching any BAR/window
+     * (spec sizing + reassignment sequence) */
+    rebar_wr(0x04, cmd & ~0x2U);
+    rebar_br_wr(bri, bb, bd, bf, 0x04, brcmd & ~0x2U);
+
+    /* BAR1 size probe. After writing all-ones, a 2^n-sized 64-bit BAR
+     * reads back only its flag bits in the low dword (0xC) and
+     * ~(size-1) >> 32 in the high dword (8 GiB -> 0xFFFFFFFE). */
+    rebar_wr(0x14, 0xFFFFFFFFU);
+    rebar_wr(0x18, 0xFFFFFFFFU);
+    rlo = rebar_rd(0x14);
+    rhi = rebar_rd(0x18);
+    if ((rlo & 0xFFFFFFF0U) != 0 || rhi != (UINT32)(~(want - 1) >> 32)) {
+        Print(L"[rebar] BAR1 size probe 0x%08x/0x%08x (want 0000000C/%08x)"
+              L" — ReBAR Control write did not take, revert\n",
+              rlo, rhi, (UINT32)(~(want - 1) >> 32));
+        u40x_rebar_revert(cfg, cya, ctl, cmd, b1lo, b1hi, b3lo, b3hi,
+                          bri, bb, bd, bf, brcmd, br24, br28, br2c);
+        return;
+    }
+
+    /* BAR3 keeps its stock size — just re-probe it so we know how much
+     * room to reserve for it right after the new BAR1 */
+    size3 = rebar_probe_bar_size(0x1C);
+    if (size3 == 0)
+        size3 = 0x2000000ULL; /* 32 MiB, from lspci, defensive fallback */
+    if ((size3 & (size3 - 1)) != 0 || size3 < 0x1000ULL) {
+        Print(L"[rebar] invalid BAR3 size 0x%llx — revert\n", size3);
+        u40x_rebar_revert(cfg, cya, ctl, cmd, b1lo, b1hi, b3lo, b3hi,
+                          bri, bb, bd, bf, brcmd, br24, br28, br2c);
+        return;
+    }
+    if (want > ~((UINT64)0) - size3) {
+        Print(L"[rebar] requested BAR span overflows 64-bit address space — revert\n");
+        u40x_rebar_revert(cfg, cya, ctl, cmd, b1lo, b1hi, b3lo, b3hi,
+                          bri, bb, bd, bf, brcmd, br24, br28, br2c);
+        return;
+    }
+    required = rebar_align_up(want, size3);
+    if (!required || required > ~((UINT64)0) - size3)
+        required = 0;
+    else
+        required += size3;
+    if (!required || !rebar_choose_window(bri, bb, bd, bf, br24, br28, br2c,
+                                          required, want, &cand1)) {
+        Print(L"[rebar] no safe dynamic MMIO window — revert\n");
+        u40x_rebar_revert(cfg, cya, ctl, cmd, b1lo, b1hi, b3lo, b3hi,
+                          bri, bb, bd, bf, brcmd, br24, br28, br2c);
+        return;
+    }
+    cand3  = (cand1 + want + size3 - 1) & ~(size3 - 1);
+    winlim = cand3 + size3 - 1;
+    Print(L"[rebar] plan: BAR1 0x%llx..0x%llx  BAR3 (size 0x%llx) 0x%llx..0x%llx\n",
+          cand1, cand1 + want - 1, size3, cand3, winlim);
+
+    /* reassign both BARs, then the bridge's prefetch window to cover them */
+    rebar_wr(0x14, (UINT32)cand1 | 0xCU);
+    rebar_wr(0x18, (UINT32)(cand1 >> 32));
+    rebar_wr(0x1C, (UINT32)cand3 | 0xCU);
+    rebar_wr(0x20, (UINT32)(cand3 >> 32));
+
+    /* bits[3:0]/[19:16] are the 64-bit-addressing-capable markers for the
+     * base/limit halves respectively (both =1 on this bridge already —
+     * see stock reg24=0xf9f1f401 — preserved here explicitly rather than
+     * assumed) */
+    rebar_br_wr(bri, bb, bd, bf, 0x24,
+               0x00010001U |
+               (UINT32)(((cand1 >> 20) & 0xFFFU) << 4) |
+               (UINT32)(((winlim >> 20) & 0xFFFU) << 20));
+    rebar_br_wr(bri, bb, bd, bf, 0x28, (UINT32)(cand1 >> 32));
+    rebar_br_wr(bri, bb, bd, bf, 0x2C, (UINT32)(winlim >> 32));
+
+    /* decode back on: bridge first (so the GPU's own decode has a live
+     * parent window the instant it comes back), then the GPU */
+    rebar_br_wr(bri, bb, bd, bf, 0x04, brcmd);
+    rebar_wr(0x04, cmd);
+
+    /* verify the assignment and that VRAM really answers through it */
+    {
+        UINT32 vlo = rebar_rd(0x14), vhi = rebar_rd(0x18);
+        volatile UINT32 *p0 = (volatile UINT32 *)(UINTN)cand1;
+        volatile UINT32 *p1 = (volatile UINT32 *)(UINTN)(cand1 + want / 2);
+        UINT32 v0 = *p0, v1 = *p1;
+        if ((((UINT64)(vlo & 0xFFFFFFF0U)) | ((UINT64)vhi << 32)) != cand1 ||
+            (v0 == 0xFFFFFFFFU && v1 == 0xFFFFFFFFU)) {
+            Print(L"[rebar] aperture verify failed (base %08x_%08x, "
+                  L"v0=0x%08x v1=0x%08x) — revert\n", vhi, vlo, v0, v1);
+            u40x_rebar_revert(cfg, cya, ctl, cmd, b1lo, b1hi, b3lo, b3hi,
+                              bri, bb, bd, bf, brcmd, br24, br28, br2c);
+            return;
+        }
+        Print(L"[rebar] aperture ok: [+0]=0x%08x [+mid]=0x%08x\n", v0, v1);
+    }
+    Print(L"[rebar] BAR1 %d GiB active @ 0x%llx (was 0x%llx), BAR3 @ 0x%llx "
+          L"(was 0x%llx) — lucky!\n",
+          (INT32)(want >> 30), cand1, b1base, cand3, b3base);
+}
+
 /* ===== v55 主入口（DIRECT_SEC2，40HX） ===== */
 EFI_STATUS EFIAPI
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
@@ -6498,9 +7340,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
 #ifdef VBIOS_DUMP
     u40x_vbios_dump();          /* v65: after BAR enable; -> \40hx_vbios.bin */
+    Print(L"[vbios] dump routine returned\n");
 #endif
 
     /* ---------- [3] BOOT0 芯片校验 ---------- */
+    Print(L"[40HX] reading BOOT0...\n");
     boot0 = mmio_read32(0x00000000UL);
     Print(L"[40HX] BOOT0=0x%08x (expect arch 0x16<<24 = TU10x)\n", boot0);
     if ((boot0 & 0xFF000000u) != 0x16000000u && boot0 != 0x0FFFFFFFu) {
@@ -6514,10 +7358,17 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         Print(L"[40HX] already unlocked (SS0/SS1 exact) - skip injection\n");
         goto done;
     }
+#ifdef DIRECT_WRITE_PROBE
+    /* Host writes to FEAT_OVR are an experimental diagnostic.  Some boards
+     * hard-stall the PCIe/MMIO transaction while the engine is locked, so
+     * keep this path opt-in instead of making it part of the unlock flow. */
     if (direct_write_probe()) {
         Print(L"[40HX] direct MMIO probe succeeded - skip booter\n");
         goto done;
     }
+#else
+    Print(L"[40HX] direct FEAT_OVR host probe disabled (booter path)\n");
+#endif
 
     /* ---------- [5] GFW 状态 + 时间种子 ---------- */
     if ((mmio_read32(REG_GFW_BOOT_OK) & 0xFFu) != 0xFFu) {
@@ -6581,7 +7432,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
      * POST/VBIOS 预载在 GSP secure IMEM，驱动只触发不重装。若 40HX 同样
      * 预载，则 [8b] 的 code 装载纯属多余（且 SEC 写不入的原因=硬件已锁
      * 该区）。探测放在 kill GFW 前，对比 kill 后差异。 */
+#ifdef PRELOAD_PROBE
     probe_preload();
+#else
+    Print(L"[40HX] preload probe disabled (normal unlock path)\n");
+#endif
 
     /* ---------- [8] kill GFW + SEC2 解锁检查 ---------- */
     gsp_engine_reset();
@@ -6708,6 +7563,12 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
 done:
     dump_regs(L"[v55 final]");
+    /* ---------- [11] best-effort ReBAR (BAR1, 8 GiB); reverts on any
+     * failed check — see u40x_rebar_try ---------- */
+    if (gBar0Base != 0 && is_unlocked())
+        u40x_rebar_try(U40X_REBAR_SIZE, U40X_REBAR_SELECTOR);
+    else
+        Print(L"[rebar] skipped: GPU is not in a valid unlocked state\n");
 #ifdef NO_AUTO_CHAINLOAD
     /*
      * Experimental Limine mode: return to the EFI caller after the unlock.
